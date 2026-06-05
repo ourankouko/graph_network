@@ -3,6 +3,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from pyvis.network import Network
 from snowflake.snowpark import Session
+import networkx as nx
 
 
 # -----------------------------
@@ -58,6 +59,62 @@ def get_node_color(node_type: str) -> str:
 
     return "#d9d9d9"
 
+def keep_top_communities(df: pd.DataFrame, top_n: int = 10) -> pd.DataFrame:
+    """
+    Detect communities from the filtered edge dataframe and keep only
+    edges where both source and target are in the top N communities.
+    """
+
+    if df.empty:
+        return df
+
+    G = nx.Graph()
+
+    for _, row in df.iterrows():
+        G.add_edge(
+            row["SOURCE"],
+            row["TARGET"],
+            weight=float(row["WEIGHT"])
+        )
+
+    if G.number_of_edges() == 0:
+        return df
+
+    communities = list(nx.community.greedy_modularity_communities(G, weight="weight"))
+
+    community_rows = []
+
+    for i, community in enumerate(communities):
+        community_rows.append({
+            "community_id": i,
+            "nodes": set(community),
+            "size": len(community)
+        })
+
+    community_rows = sorted(
+        community_rows,
+        key=lambda x: x["size"],
+        reverse=True
+    )
+
+    top_communities = community_rows[:top_n]
+
+    node_to_community = {}
+
+    for community in top_communities:
+        for node in community["nodes"]:
+            node_to_community[node] = community["community_id"]
+
+    top_nodes = set(node_to_community.keys())
+
+    filtered_df = df[
+        df["SOURCE"].isin(top_nodes) &
+        df["TARGET"].isin(top_nodes)
+    ].copy()
+
+    filtered_df["CLUSTER"] = filtered_df["SOURCE"].map(node_to_community)
+
+    return filtered_df
 
 def build_pyvis_graph(df: pd.DataFrame) -> str:
     net = Network(
@@ -173,7 +230,7 @@ with st.sidebar:
         "Maximum edges to visualise",
         min_value=20,
         max_value=1000,
-        value=300,
+        value=800,
         step=20,
     )
 
@@ -215,6 +272,9 @@ LIMIT {max_edges}
 """
 
 df = run_query(sql)
+
+if not search_term.strip():
+    df = keep_top_communities(df, top_n=10)
 
 
 # -----------------------------
