@@ -1,4 +1,3 @@
-import tempfile
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
@@ -68,6 +67,7 @@ def build_pyvis_graph(df: pd.DataFrame) -> str:
         font_color="#222222",
         directed=False,
         notebook=False,
+        cdn_resources='in_line',
     )
 
     net.barnes_hut(
@@ -124,14 +124,8 @@ def build_pyvis_graph(df: pd.DataFrame) -> str:
     # Useful built-in controls for demo
     net.show_buttons(filter_=["physics"])
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".html") as tmp_file:
-        net.save_graph(tmp_file.name)
-
-        with open(tmp_file.name, "r", encoding="utf-8") as f:
-            html = f.read()
-
+    html = net.generate_html(notebook=False)
     return html
-
 
 # -----------------------------
 # Load filter options
