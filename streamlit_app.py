@@ -188,7 +188,12 @@ The graph has filters a user can set. Based on the user's natural language reque
   "edge_type": "<string or null>",      // e.g. "APPLICANT-SUBJECT", or null for All
   "search_term": "<string or null>",    // name to search in source/target, or null
   "min_weight": <integer or null>,      // minimum edge weight, or null to keep current
-  "max_edges": <integer or null>,       // max edges to show (20–1000), or null to keep current
+  "max_edges": <integer or null>,       // max edges to show (20–1000), or null to keep current.
+                                        // IMPORTANT: when user asks for "top N corporations/institutes/nodes",
+                                        // do NOT set max_edges to N. Instead set max_edges to a larger number
+                                        // like 200 and let the weight ordering handle ranking. Only set
+                                        // max_edges small (e.g. 20-50) if the user explicitly wants to limit
+                                        // the total number of edges shown on the graph.
   "explanation": "<short human-readable summary of what you understood>"
 }
 
@@ -313,53 +318,47 @@ if "chat_display" not in st.session_state:
 with st.sidebar:
     st.header("Filters")
 
-    fs = st.session_state.filter_state
-
-    selected_ip_type = st.selectbox(
+    st.selectbox(
         "IP type",
         ip_types,
-        index=ip_types.index(fs["ip_type"]) if fs["ip_type"] in ip_types else 0,
+        index=ip_types.index(st.session_state.filter_state["ip_type"]) if st.session_state.filter_state["ip_type"] in ip_types else 0,
         key="sb_ip_type",
+        on_change=lambda: st.session_state.filter_state.update({"ip_type": st.session_state.sb_ip_type}),
     )
 
-    selected_edge_type = st.selectbox(
+    st.selectbox(
         "Edge type",
         edge_types,
-        index=edge_types.index(fs["edge_type"]) if fs["edge_type"] in edge_types else 0,
+        index=edge_types.index(st.session_state.filter_state["edge_type"]) if st.session_state.filter_state["edge_type"] in edge_types else 0,
         key="sb_edge_type",
+        on_change=lambda: st.session_state.filter_state.update({"edge_type": st.session_state.sb_edge_type}),
     )
 
-    search_term = st.text_input(
+    st.text_input(
         "Search source or target name",
-        value=fs["search_term"],
+        value=st.session_state.filter_state["search_term"],
         placeholder="e.g. NATIONAL UNIVERSITY OF SINGAPORE",
         key="sb_search",
+        on_change=lambda: st.session_state.filter_state.update({"search_term": st.session_state.sb_search}),
     )
 
-    min_weight = st.number_input(
+    st.number_input(
         "Minimum edge weight",
         min_value=1,
-        value=fs["min_weight"],
+        value=st.session_state.filter_state["min_weight"],
         key="sb_min_weight",
+        on_change=lambda: st.session_state.filter_state.update({"min_weight": st.session_state.sb_min_weight}),
     )
 
-    max_edges = st.slider(
+    st.slider(
         "Maximum edges to visualise",
         min_value=20,
         max_value=1000,
-        value=fs["max_edges"],
+        value=st.session_state.filter_state["max_edges"],
         step=20,
         key="sb_max_edges",
+        on_change=lambda: st.session_state.filter_state.update({"max_edges": st.session_state.sb_max_edges}),
     )
-
-    # Keep session state in sync with manual widget changes
-    st.session_state.filter_state = {
-        "ip_type": selected_ip_type,
-        "edge_type": selected_edge_type,
-        "search_term": search_term,
-        "min_weight": min_weight,
-        "max_edges": max_edges,
-    }
 
     st.divider()
 
