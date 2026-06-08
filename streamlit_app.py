@@ -47,18 +47,29 @@ def sql_escape(value: str) -> str:
     return value.replace("'", "''")
 
 
-def get_node_color(node_type: str) -> str:
+def get_node_color(node_type: str, node_name: str, nus_affiliated) -> str:
     node_type = str(node_type).upper()
+    node_name = str(node_name).upper()
 
+    # Highlight NUS-affiliated nodes first
+    if str(nus_affiliated).upper() in ["TRUE", "1", "YES"]:
+        return "#C00000"  # red
+
+    if "NATIONAL UNIVERSITY OF SINGAPORE" in node_name:
+        return "#C00000"  # red
+
+    # Other node types
     if "SUBJECT" in node_type:
-        return "#f4b183"
+        return "#F4B183"  # orange
+
     if "APPLICANT" in node_type:
-        return "#9dc3e6"
+        return "#9DC3E6"  # blue
+
     if "INSTITUTE" in node_type:
-        return "#a9d18e"
+        return "#A9D18E"  # green
 
-    return "#d9d9d9"
-
+    return "#D9D9D9"  # grey
+    
 def keep_top_communities(df: pd.DataFrame, top_n: int = 10) -> pd.DataFrame:
     """
     Detect communities from the filtered edge dataframe and keep only
@@ -156,7 +167,7 @@ def build_pyvis_graph(df: pd.DataFrame) -> str:
                 source_id,
                 label=source_name,
                 title=f"{source_name}<br>Type: {source_type}",
-                color=get_node_color(source_type),
+                color=get_node_color(source_type, source_name, row["SOURCE_NUS_AFFILIATED"]),,
                 value=1,
             )
             added_nodes.add(source_id)
@@ -166,7 +177,7 @@ def build_pyvis_graph(df: pd.DataFrame) -> str:
                 target_id,
                 label=target_name,
                 title=f"{target_name}<br>Type: {target_type}",
-                color=get_node_color(target_type),
+                color=get_node_color(target_type, target_name, row["TARGET_NUS_AFFILIATED"]),,
                 value=1,
             )
             added_nodes.add(target_id)
@@ -259,9 +270,11 @@ SELECT
     SOURCE,
     SOURCE_NAME,
     SOURCE_TYPE,
+    SOURCE_NUS_AFFILIATED,
     TARGET,
     TARGET_NAME,
     TARGET_TYPE,
+    TARGET_NUS_AFFILIATED,
     EDGE_TYPE,
     IP_TYPE,
     WEIGHT
@@ -281,6 +294,15 @@ if not search_term.strip():
 # Main output
 # -----------------------------
 st.subheader("Network graph")
+st.markdown(
+    """
+    **Legend:**  
+    🔴 NUS-affiliated node  
+    🟠 QS Subject  
+    🔵 Patent applicant  
+    🟢 Publication institute  
+    """,
+)
 
 if df.empty:
     st.warning("No edges found for the selected filters.")
