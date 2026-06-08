@@ -518,7 +518,8 @@ with st.sidebar:
         ip_types,
         index=ip_types.index(st.session_state.filter_state["ip_type"]) if st.session_state.filter_state["ip_type"] in ip_types else 0,
         key="sb_ip_type",
-        on_change=lambda: st.session_state.filter_state.update({"ip_type": st.session_state.sb_ip_type, "top_n_nodes": None, "query_mode": "standard"}),
+        on_change=lambda: (st.session_state.filter_state.update({"ip_type": st.session_state.sb_ip_type, "top_n_nodes": None, "query_mode": "standard"}),
+                          run_query.clear()),
     )
 
     st.selectbox(
@@ -526,7 +527,8 @@ with st.sidebar:
         edge_types,
         index=edge_types.index(st.session_state.filter_state["edge_type"]) if st.session_state.filter_state["edge_type"] in edge_types else 0,
         key="sb_edge_type",
-        on_change=lambda: st.session_state.filter_state.update({"edge_type": st.session_state.sb_edge_type, "top_n_nodes": None, "query_mode": "standard"}),
+        on_change=lambda: (st.session_state.filter_state.update({"edge_type": st.session_state.sb_edge_type, "top_n_nodes": None, "query_mode": "standard"}),
+                          run_query.clear()),
     )
 
     st.selectbox(
@@ -534,7 +536,8 @@ with st.sidebar:
         categories,
         index=categories.index(st.session_state.filter_state["category"]) if st.session_state.filter_state["category"] in categories else 0,
         key="sb_category",
-        on_change=lambda: st.session_state.filter_state.update({"category": st.session_state.sb_category, "top_n_nodes": None, "query_mode": "standard"}),
+        on_change=lambda: (st.session_state.filter_state.update({"category": st.session_state.sb_category, "top_n_nodes": None, "query_mode": "standard"}),
+                          run_query.clear()),
     )
 
     st.text_input(
@@ -542,7 +545,8 @@ with st.sidebar:
         value=st.session_state.filter_state["search_term"],
         placeholder="e.g. NATIONAL UNIVERSITY OF SINGAPORE",
         key="sb_search",
-        on_change=lambda: st.session_state.filter_state.update({"search_term": st.session_state.sb_search, "top_n_nodes": None, "query_mode": "standard"}),
+        on_change=lambda: (st.session_state.filter_state.update({"search_term": st.session_state.sb_search, "top_n_nodes": None, "query_mode": "standard"}),
+                          run_query.clear()),
     )
 
     st.number_input(
@@ -550,7 +554,8 @@ with st.sidebar:
         min_value=1,
         value=st.session_state.filter_state["min_weight"],
         key="sb_min_weight",
-        on_change=lambda: st.session_state.filter_state.update({"min_weight": st.session_state.sb_min_weight}),
+        on_change=lambda: (st.session_state.filter_state.update({"min_weight": st.session_state.sb_min_weight}),
+                           run_query.clear()),
     )
 
     st.slider(
@@ -560,7 +565,8 @@ with st.sidebar:
         value=st.session_state.filter_state["max_edges"],
         step=20,
         key="sb_max_edges",
-        on_change=lambda: st.session_state.filter_state.update({"max_edges": st.session_state.sb_max_edges, "top_n_nodes": None}),
+        on_change=lambda: (st.session_state.filter_state.update({"max_edges": st.session_state.sb_max_edges, "top_n_nodes": None}),
+                           run_query.clear()),
     )
 
     st.divider()
