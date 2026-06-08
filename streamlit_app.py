@@ -621,12 +621,13 @@ if "filter_state" not in st.session_state:
         "edge_type": "All",
         "search_term": "",
         "min_weight": 1,
-        "max_edges": 800,
+        "max_edges": 200,
         "category": "All",
         "top_n_nodes": None,
         "query_mode": "standard",
         "top_n_results": None,
         "subject_filter": None,
+        "has_queried": False,
     }
 
 if "chat_history" not in st.session_state:
@@ -648,7 +649,7 @@ with st.sidebar:
         ip_types,
         index=ip_types.index(st.session_state.filter_state["ip_type"]) if st.session_state.filter_state["ip_type"] in ip_types else 0,
         key="sb_ip_type",
-        on_change=lambda: st.session_state.filter_state.update({"ip_type": st.session_state.sb_ip_type, "top_n_nodes": None, "query_mode": "standard"}),
+        on_change=lambda: (st.session_state.filter_state.update({"ip_type": st.session_state.sb_ip_type, "top_n_nodes": None, "query_mode": "standard", "has_queried": True}), run_query.clear()),
     )
 
     st.selectbox(
@@ -656,7 +657,7 @@ with st.sidebar:
         edge_types,
         index=edge_types.index(st.session_state.filter_state["edge_type"]) if st.session_state.filter_state["edge_type"] in edge_types else 0,
         key="sb_edge_type",
-        on_change=lambda: st.session_state.filter_state.update({"edge_type": st.session_state.sb_edge_type, "top_n_nodes": None, "query_mode": "standard"}),
+        on_change=lambda: (st.session_state.filter_state.update({"edge_type": st.session_state.sb_edge_type, "top_n_nodes": None, "query_mode": "standard", "has_queried": True}), run_query.clear()),
     )
 
     st.selectbox(
@@ -664,7 +665,7 @@ with st.sidebar:
         categories,
         index=categories.index(st.session_state.filter_state["category"]) if st.session_state.filter_state["category"] in categories else 0,
         key="sb_category",
-        on_change=lambda: st.session_state.filter_state.update({"category": st.session_state.sb_category, "top_n_nodes": None, "query_mode": "standard"}),
+        on_change=lambda: (st.session_state.filter_state.update({"category": st.session_state.sb_category, "top_n_nodes": None, "query_mode": "standard", "has_queried": True}), run_query.clear()),
     )
 
     st.text_input(
@@ -672,7 +673,7 @@ with st.sidebar:
         value=st.session_state.filter_state["search_term"],
         placeholder="e.g. NATIONAL UNIVERSITY OF SINGAPORE",
         key="sb_search",
-        on_change=lambda: st.session_state.filter_state.update({"search_term": st.session_state.sb_search, "top_n_nodes": None, "query_mode": "standard"}),
+        on_change=lambda: (st.session_state.filter_state.update({"search_term": st.session_state.sb_search, "top_n_nodes": None, "query_mode": "standard", "has_queried": True}), run_query.clear()),
     )
 
     st.number_input(
@@ -680,7 +681,7 @@ with st.sidebar:
         min_value=1,
         value=st.session_state.filter_state["min_weight"],
         key="sb_min_weight",
-        on_change=lambda: st.session_state.filter_state.update({"min_weight": st.session_state.sb_min_weight}),
+        on_change=lambda: (st.session_state.filter_state.update({"min_weight": st.session_state.sb_min_weight, "has_queried": True}), run_query.clear()),
     )
 
     st.slider(
@@ -690,7 +691,7 @@ with st.sidebar:
         value=st.session_state.filter_state["max_edges"],
         step=20,
         key="sb_max_edges",
-        on_change=lambda: st.session_state.filter_state.update({"max_edges": st.session_state.sb_max_edges, "top_n_nodes": None}),
+        on_change=lambda: (st.session_state.filter_state.update({"max_edges": st.session_state.sb_max_edges, "top_n_nodes": None, "has_queried": True}), run_query.clear()),
     )
 
     st.divider()
@@ -719,6 +720,7 @@ top_n_nodes = fs.get("top_n_nodes")
 query_mode = fs.get("query_mode", "standard")
 top_n_results = fs.get("top_n_results") or 20
 subject_filter = fs.get("subject_filter")
+has_queried = fs.get("has_queried", False)
 
 
 # -----------------------------
@@ -726,7 +728,17 @@ subject_filter = fs.get("subject_filter")
 # -----------------------------
 st.subheader("🗺️ Collaboration Network")
 
-if query_mode == "similar_no_collab":
+if not has_queried:
+    st.info(
+        "👋 **Welcome to the Research Collaboration Explorer!**\n\n"
+        "Use the AI assistant below to get started. Here are some things you can ask:\n\n"
+        "- _'Show me the top 10 corporations collaborating with NUS on publications'_\n"
+        "- _'Show NUS patent partners in engineering'_\n"
+        "- _'Show corporations with similar research interests to NUS that haven\\'t collaborated before'_\n\n"
+        "Or use the manual filters in the sidebar."
+    )
+
+elif query_mode == "similar_no_collab":
     # --- Similar interests, no prior collaboration mode ---
     if not search_term.strip():
         st.warning("Please specify an institution to search from. Try asking: _'Show corporations with similar interests to NUS in publications that haven't collaborated with NUS'_")
@@ -903,6 +915,7 @@ if submitted and user_input.strip():
                 edge_types_raw,
                 categories_raw,
             )
+            new_fs["has_queried"] = True
             st.session_state.filter_state = new_fs
 
             # Build a readable summary of what changed
