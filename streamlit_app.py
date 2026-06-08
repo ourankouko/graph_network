@@ -262,8 +262,68 @@ LIMIT {top_n}
     return run_query(sql)
 
 
-def build_similar_no_collab_graph(results_df: pd.DataFrame, institution: str) -> str:
-    """Build a star-shaped pyvis graph: institution in centre, matched orgs around it."""
+def run_similar_no_collab_subject_edges(
+    institution: str,
+    org_ids: list,
+    ip_type: str = None,
+    subject_filter: str = None,
+) -> pd.DataFrame:
+    """
+    For a list of matched orgs, fetch their actual connections to shared subjects
+    so we can draw org → subject edges in the graph.
+    """
+    if not org_ids:
+        return pd.DataFrame()
+
+    safe_inst = sql_escape(institution)
+    ip_filter = f"AND IP_TYPE = '{sql_escape(ip_type)}'" if ip_type and ip_type != "All" else ""
+
+    if ip_type == "Patents":
+        subject_edge_types = "('Applicant_Subject')"
+    elif ip_type == "Publications":
+        subject_edge_types = "('Institute_Subject')"
+    else:
+        subject_edge_types = "('Applicant_Subject', 'Institute_Subject')"
+
+    subject_clause = (
+        f"AND (SOURCE_NAME ILIKE '%{sql_escape(subject_filter)}%' OR TARGET_NAME ILIKE '%{sql_escape(subject_filter)}%')"
+        if subject_filter else ""
+    )
+
+    # Quote org IDs for SQL IN clause
+    quoted_ids = ", ".join(f"'{sql_escape(str(oid))}'" for oid in org_ids)
+
+    sql = f"""
+WITH inst_subjects AS (
+    SELECT DISTINCT
+        CASE WHEN SOURCE_NAME ILIKE '%{safe_inst}%' THEN TARGET ELSE SOURCE END AS SUBJECT_ID,
+        CASE WHEN SOURCE_NAME ILIKE '%{safe_inst}%' THEN TARGET_NAME ELSE SOURCE_NAME END AS SUBJECT_NAME
+    FROM GRAPH_NETWORK.GRAPH.ALL_EDGES_ENRICHED
+    WHERE (SOURCE_NAME ILIKE '%{safe_inst}%' OR TARGET_NAME ILIKE '%{safe_inst}%')
+    AND EDGE_TYPE IN {subject_edge_types}
+    {ip_filter}
+    {subject_clause}
+)
+SELECT
+    CASE WHEN SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects) THEN TARGET ELSE SOURCE END AS ORG_ID,
+    CASE WHEN SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects) THEN TARGET_NAME ELSE SOURCE_NAME END AS ORG_NAME,
+    CASE WHEN SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects) THEN SOURCE ELSE TARGET END AS SUBJECT_ID,
+    CASE WHEN SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects) THEN SOURCE_NAME ELSE TARGET_NAME END AS SUBJECT_NAME,
+    WEIGHT
+FROM GRAPH_NETWORK.GRAPH.ALL_EDGES_ENRICHED
+WHERE EDGE_TYPE IN {subject_edge_types}
+{ip_filter}
+AND (SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects) OR TARGET IN (SELECT SUBJECT_ID FROM inst_subjects))
+AND (SOURCE IN ({quoted_ids}) OR TARGET IN ({quoted_ids}))
+"""
+    return run_query(sql)
+
+
+def build_similar_no_collab_graph(results_df: pd.DataFrame, edges_df: pd.DataFrame) -> str:
+    """
+    Build a bipartite graph: organisations (blue) on the left, shared subject areas (orange) on the right.
+    Edges connect orgs to their matching subjects. Node size = number of connections.
+    """
     net = Network(
         height="750px",
         width="100%",
@@ -274,43 +334,68 @@ def build_similar_no_collab_graph(results_df: pd.DataFrame, institution: str) ->
         cdn_resources="in_line",
     )
     net.barnes_hut(
-        gravity=-20000,
-        central_gravity=0.5,
-        spring_length=200,
-        spring_strength=0.02,
-        damping=0.8,
+        gravity=-15000,
+        central_gravity=0.1,
+        spring_length=250,
+        spring_strength=0.015,
+        damping=0.85,
         overlap=0.5,
     )
 
-    # Add central institution node
-    net.add_node(
-        "INST_CENTER",
-        label=institution,
-        title=f"{institution}<br>Your institution",
-        color="#C00000",
-        value=10,
-        size=40,
-    )
+    added_orgs = set()
+    added_subjects = set()
 
-    for _, row in results_df.iterrows():
+    # Build lookup for org metadata from results_df
+    org_meta = {
+        str(row["ORG_ID"]): {
+            "name": str(row["ORG_NAME"]),
+            "category": str(row.get("ORG_CATEGORY", "")),
+            "shared": int(row["SHARED_SUBJECTS"]),
+            "weight": float(row["TOTAL_WEIGHT"]),
+        }
+        for _, row in results_df.iterrows()
+    }
+
+    for _, row in edges_df.iterrows():
         org_id = str(row["ORG_ID"])
         org_name = str(row["ORG_NAME"])
-        shared = int(row["SHARED_SUBJECTS"])
-        weight = float(row["TOTAL_WEIGHT"])
-        category = str(row.get("ORG_CATEGORY", ""))
+        subj_id = str(row["SUBJECT_ID"])
+        subj_name = str(row["SUBJECT_NAME"])
+        weight = float(row["WEIGHT"])
 
-        net.add_node(
-            org_id,
-            label=org_name,
-            title=f"{org_name}<br>Category: {category}<br>Shared subjects: {shared}<br>Total weight: {weight}",
-            color="#9DC3E6",
-            value=shared,
-        )
+        meta = org_meta.get(org_id, {})
+
+        if org_id not in added_orgs:
+            shared = meta.get("shared", 1)
+            net.add_node(
+                org_id,
+                label=org_name,
+                title=(
+                    f"{org_name}<br>"
+                    f"Category: {meta.get('category', '')}<br>"
+                    f"Shared subjects: {shared}<br>"
+                    f"Total strength: {meta.get('weight', 0):.0f}"
+                ),
+                color="#9DC3E6",
+                value=shared,
+            )
+            added_orgs.add(org_id)
+
+        if subj_id not in added_subjects:
+            net.add_node(
+                subj_id,
+                label=subj_name,
+                title=f"Subject: {subj_name}",
+                color="#F4B183",
+                value=3,
+            )
+            added_subjects.add(subj_id)
+
         net.add_edge(
-            "INST_CENTER",
             org_id,
-            value=shared,
-            title=f"Shared subjects: {shared}<br>Total weight: {weight}",
+            subj_id,
+            value=weight,
+            title=f"Strength: {weight:.0f}",
         )
 
     net.show_buttons(filter_=["physics"])
@@ -668,9 +753,23 @@ if query_mode == "similar_no_collab":
         if similar_df.empty:
             st.info("No matches found. Try broadening the filters — e.g. remove the category filter or change the output type.")
         else:
-            html = build_similar_no_collab_graph(similar_df, search_term.strip())
+            # Fetch org→subject edges for the bipartite graph
+            org_ids = similar_df["ORG_ID"].tolist()
+            with st.spinner("Loading subject connections…"):
+                edges_df = run_similar_no_collab_subject_edges(
+                    institution=search_term.strip(),
+                    org_ids=org_ids,
+                    ip_type=selected_ip_type if selected_ip_type != "All" else None,
+                    subject_filter=subject_filter,
+                )
+
+            html = build_similar_no_collab_graph(similar_df, edges_df)
             components.html(html, height=780, scrolling=True)
-            st.caption(f"Showing {len(similar_df):,} potential collaboration partners ranked by shared research subjects.")
+            st.caption(
+                f"🔵 Blue nodes = potential partners ({len(similar_df)})  "
+                f"🟠 Orange nodes = shared research subjects.  "
+                "Hover over any node or edge for details."
+            )
 
             st.subheader("📋 Ranked results")
             display_df = similar_df[["ORG_NAME", "ORG_CATEGORY", "SHARED_SUBJECTS", "TOTAL_WEIGHT"]].copy()
