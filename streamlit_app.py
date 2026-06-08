@@ -113,6 +113,43 @@ def keep_top_communities(df: pd.DataFrame, top_n: int = 10) -> pd.DataFrame:
     return filtered_df
 
 
+def keep_top_n_neighbours(df: pd.DataFrame, search_term: str, top_n: int) -> pd.DataFrame:
+    """Keep only the top N neighbours by total edge weight connected to the search term node."""
+    if df.empty or not search_term:
+        return df
+
+    term = search_term.upper()
+
+    mask = (
+        df["SOURCE_NAME"].str.upper().str.contains(term, regex=False) |
+        df["TARGET_NAME"].str.upper().str.contains(term, regex=False)
+    )
+    direct_edges = df[mask].copy()
+
+    if direct_edges.empty:
+        return df
+
+    def get_neighbour(row):
+        if term in str(row["SOURCE_NAME"]).upper():
+            return row["TARGET_NAME"]
+        return row["SOURCE_NAME"]
+
+    direct_edges["NEIGHBOUR"] = direct_edges.apply(get_neighbour, axis=1)
+
+    top_neighbours = (
+        direct_edges.groupby("NEIGHBOUR")["WEIGHT"]
+        .sum()
+        .sort_values(ascending=False)
+        .head(top_n)
+        .index.tolist()
+    )
+
+    return df[
+        df["SOURCE_NAME"].isin(top_neighbours) |
+        df["TARGET_NAME"].isin(top_neighbours)
+    ].copy()
+
+
 def build_pyvis_graph(df: pd.DataFrame) -> str:
     net = Network(
         height="750px",
@@ -149,7 +186,7 @@ def build_pyvis_graph(df: pd.DataFrame) -> str:
             net.add_node(
                 source_id,
                 label=source_name,
-                title=f"{source_name}<br>Type: {source_type}",
+                title=f"{source_name}<br>Type: {source_type}<br>Category: {row['SOURCE_CATEGORY']}",
                 color=get_node_color(source_type, source_name, row["SOURCE_NUS_AFFILIATED"]),
                 value=1,
             )
@@ -159,7 +196,7 @@ def build_pyvis_graph(df: pd.DataFrame) -> str:
             net.add_node(
                 target_id,
                 label=target_name,
-                title=f"{target_name}<br>Type: {target_type}",
+                title=f"{target_name}<br>Type: {target_type}<br>Category: {row['TARGET_CATEGORY']}",
                 color=get_node_color(target_type, target_name, row["TARGET_NUS_AFFILIATED"]),
                 value=1,
             )
@@ -194,6 +231,12 @@ The graph has filters a user can set. Based on the user's natural language reque
                                         // like 200 and let the weight ordering handle ranking. Only set
                                         // max_edges small (e.g. 20-50) if the user explicitly wants to limit
                                         // the total number of edges shown on the graph.
+  "category": "<string or null>",       // organisation category e.g. "CORPORATION", "HOSPITAL", "INSTITUTE", or null for All
+                                        // available categories: [AVAILABLE_CATEGORIES]
+  "top_n_nodes": <integer or null>,     // when user asks "top N" partners/collaborators, set this to N.
+                                        // This filters the graph to show only the N strongest neighbours
+                                        // of the searched institution ranked by collaboration strength.
+                                        // Leave null if the user does not specify a number.
   "explanation": "<short human-readable summary of what you understood>"
 }
 
@@ -201,8 +244,9 @@ Rules:
 - Only set fields the user explicitly or clearly implies. Leave others null (meaning: do not change).
 - ip_type must be one of the exact values from this list (case-insensitive match): [AVAILABLE_IP_TYPES]
 - edge_type must be one of the exact values from this list: [AVAILABLE_EDGE_TYPES]
+- category must be one of the exact values from this list: [AVAILABLE_CATEGORIES]
 - If the user mentions "NUS" or "National University of Singapore", set search_term to "NATIONAL UNIVERSITY OF SINGAPORE".
-- If the user says "reset", "clear", or "show everything", return all nulls except set ip_type=null, edge_type=null, search_term=null, min_weight=1, max_edges=800.
+- If the user says "reset", "clear", or "show everything", return all nulls except set ip_type=null, edge_type=null, search_term=null, min_weight=1, max_edges=800, category=null, top_n_nodes=null.
 - Always return ONLY valid JSON. No markdown fences, no extra text."""
 
 
@@ -211,12 +255,15 @@ def extract_filters_from_llm(
     chat_history: list,
     available_ip_types: list,
     available_edge_types: list,
+    available_categories: list,
 ) -> dict: 
 
     system = SYSTEM_PROMPT.replace(
         "[AVAILABLE_IP_TYPES]", ", ".join(available_ip_types)
     ).replace(
         "[AVAILABLE_EDGE_TYPES]", ", ".join(available_edge_types)
+    ).replace(
+        "[AVAILABLE_CATEGORIES]", ", ".join(available_categories)
     )
 
     messages = []
@@ -240,7 +287,7 @@ def extract_filters_from_llm(
     return json.loads(raw)
 
 
-def apply_llm_filters(parsed: dict, current_state: dict, available_ip_types: list, available_edge_types: list) -> dict:
+def apply_llm_filters(parsed: dict, current_state: dict, available_ip_types: list, available_edge_types: list, available_categories: list) -> dict:
     """Merge LLM-extracted filters onto the current filter state."""
     new_state = current_state.copy()
 
@@ -257,6 +304,11 @@ def apply_llm_filters(parsed: dict, current_state: dict, available_ip_types: lis
         match = next((t for t in available_edge_types if t.upper() == val), None)
         new_state["edge_type"] = match if match else "All"
 
+    if parsed.get("category") is not None:
+        val = parsed["category"].upper()
+        match = next((c for c in available_categories if c.upper() == val), None)
+        new_state["category"] = match if match else "All"
+
     if parsed.get("search_term") is not None:
         new_state["search_term"] = parsed["search_term"]
 
@@ -265,6 +317,8 @@ def apply_llm_filters(parsed: dict, current_state: dict, available_ip_types: lis
 
     if parsed.get("max_edges") is not None:
         new_state["max_edges"] = max(20, min(1000, int(parsed["max_edges"])))
+
+    new_state["top_n_nodes"] = int(parsed["top_n_nodes"]) if parsed.get("top_n_nodes") is not None else None
 
     return new_state
 
@@ -286,11 +340,24 @@ ip_types_df = run_query("""
     ORDER BY IP_TYPE
 """)
 
+categories_df = run_query("""
+    SELECT DISTINCT SOURCE_CATEGORY AS CATEGORY
+    FROM GRAPH_NETWORK.GRAPH.ALL_EDGES_ENRICHED
+    WHERE SOURCE_CATEGORY IS NOT NULL
+    UNION
+    SELECT DISTINCT TARGET_CATEGORY AS CATEGORY
+    FROM GRAPH_NETWORK.GRAPH.ALL_EDGES_ENRICHED
+    WHERE TARGET_CATEGORY IS NOT NULL
+    ORDER BY CATEGORY
+""")
+
 edge_types_raw = edge_types_df["EDGE_TYPE"].tolist()
 ip_types_raw = ip_types_df["IP_TYPE"].tolist()
+categories_raw = categories_df["CATEGORY"].tolist()
 
 edge_types = ["All"] + edge_types_raw
 ip_types = ["All"] + ip_types_raw
+categories = ["All"] + categories_raw
 
 
 # -----------------------------
@@ -303,6 +370,8 @@ if "filter_state" not in st.session_state:
         "search_term": "",
         "min_weight": 1,
         "max_edges": 800,
+        "category": "All",
+        "top_n_nodes": None,
     }
 
 if "chat_history" not in st.session_state:
@@ -316,34 +385,43 @@ if "chat_display" not in st.session_state:
 # Sidebar: manual filters + chat
 # -----------------------------
 with st.sidebar:
-    st.header("Filters")
+    st.header("⚙️ Manual Filters")
+    st.caption("Or just ask the AI assistant below the graph.")
 
     st.selectbox(
-        "IP type",
+        "Research output type",
         ip_types,
         index=ip_types.index(st.session_state.filter_state["ip_type"]) if st.session_state.filter_state["ip_type"] in ip_types else 0,
         key="sb_ip_type",
-        on_change=lambda: st.session_state.filter_state.update({"ip_type": st.session_state.sb_ip_type}),
+        on_change=lambda: st.session_state.filter_state.update({"ip_type": st.session_state.sb_ip_type, "top_n_nodes": None}),
     )
 
     st.selectbox(
-        "Edge type",
+        "Connection type",
         edge_types,
         index=edge_types.index(st.session_state.filter_state["edge_type"]) if st.session_state.filter_state["edge_type"] in edge_types else 0,
         key="sb_edge_type",
-        on_change=lambda: st.session_state.filter_state.update({"edge_type": st.session_state.sb_edge_type}),
+        on_change=lambda: st.session_state.filter_state.update({"edge_type": st.session_state.sb_edge_type, "top_n_nodes": None}),
+    )
+
+    st.selectbox(
+        "Organisation category",
+        categories,
+        index=categories.index(st.session_state.filter_state["category"]) if st.session_state.filter_state["category"] in categories else 0,
+        key="sb_category",
+        on_change=lambda: st.session_state.filter_state.update({"category": st.session_state.sb_category, "top_n_nodes": None}),
     )
 
     st.text_input(
-        "Search source or target name",
+        "Search for an institution or organisation",
         value=st.session_state.filter_state["search_term"],
         placeholder="e.g. NATIONAL UNIVERSITY OF SINGAPORE",
         key="sb_search",
-        on_change=lambda: st.session_state.filter_state.update({"search_term": st.session_state.sb_search}),
+        on_change=lambda: st.session_state.filter_state.update({"search_term": st.session_state.sb_search, "top_n_nodes": None}),
     )
 
     st.number_input(
-        "Minimum edge weight",
+        "Minimum collaboration strength",
         min_value=1,
         value=st.session_state.filter_state["min_weight"],
         key="sb_min_weight",
@@ -351,16 +429,26 @@ with st.sidebar:
     )
 
     st.slider(
-        "Maximum edges to visualise",
+        "Maximum connections to load",
         min_value=20,
         max_value=1000,
         value=st.session_state.filter_state["max_edges"],
         step=20,
         key="sb_max_edges",
-        on_change=lambda: st.session_state.filter_state.update({"max_edges": st.session_state.sb_max_edges}),
+        on_change=lambda: st.session_state.filter_state.update({"max_edges": st.session_state.sb_max_edges, "top_n_nodes": None}),
     )
 
     st.divider()
+    st.markdown(
+        """
+        **Legend**  
+        🔴 NUS-affiliated  
+        🟠 Research subject  
+        🔵 Patent applicant  
+        🟢 Publication institute  
+        ⚪ Other  
+        """
+    )
 
 # -----------------------------
 # Read effective filters (may have been updated by LLM)
@@ -368,9 +456,11 @@ with st.sidebar:
 fs = st.session_state.filter_state
 selected_ip_type = fs["ip_type"]
 selected_edge_type = fs["edge_type"]
+selected_category = fs["category"]
 search_term = fs["search_term"]
 min_weight = fs["min_weight"]
 max_edges = fs["max_edges"]
+top_n_nodes = fs.get("top_n_nodes")
 
 
 # -----------------------------
@@ -383,6 +473,12 @@ if selected_ip_type != "All":
 
 if selected_edge_type != "All":
     where_clauses.append(f"EDGE_TYPE = '{sql_escape(selected_edge_type)}'")
+
+if selected_category != "All":
+    safe_cat = sql_escape(selected_category)
+    where_clauses.append(
+        f"(SOURCE_CATEGORY = '{safe_cat}' OR TARGET_CATEGORY = '{safe_cat}')"
+    )
 
 if search_term.strip():
     safe_search = sql_escape(search_term.strip())
@@ -397,10 +493,12 @@ SELECT
     SOURCE,
     SOURCE_NAME,
     SOURCE_TYPE,
+    SOURCE_CATEGORY,
     SOURCE_NUS_AFFILIATED,
     TARGET,
     TARGET_NAME,
     TARGET_TYPE,
+    TARGET_CATEGORY,
     TARGET_NUS_AFFILIATED,
     EDGE_TYPE,
     IP_TYPE,
@@ -413,7 +511,9 @@ LIMIT {max_edges}
 
 df = run_query(sql)
 
-if not search_term.strip():
+if top_n_nodes and search_term.strip():
+    df = keep_top_n_neighbours(df, search_term.strip(), top_n_nodes)
+elif not search_term.strip():
     df = keep_top_communities(df, top_n=10)
 
 
@@ -468,10 +568,19 @@ for msg in st.session_state.chat_display:
                 with st.expander("Applied filters", expanded=False):
                     st.json(msg["filters"])
 
-# Chat input
-user_input = st.chat_input("Ask anything about the network…")
+# Chat input using st.form — Enter submits, clears after send, renders inline
+with st.form(key="chat_form", clear_on_submit=True):
+    col1, col2 = st.columns([5, 1])
+    with col1:
+        user_input = st.text_input(
+            "Your question",
+            placeholder="e.g. Show me top 10 corporations collaborating with NUS on publications",
+            label_visibility="collapsed",
+        )
+    with col2:
+        submitted = st.form_submit_button("Send ➤", use_container_width=True)
 
-if user_input:
+if submitted and user_input.strip():
     # Show user message immediately
     st.session_state.chat_display.append({"role": "user", "content": user_input})
 
@@ -482,6 +591,7 @@ if user_input:
                 chat_history=st.session_state.chat_history,
                 available_ip_types=ip_types_raw,
                 available_edge_types=edge_types_raw,
+                available_categories=categories_raw,
             )
 
             explanation = parsed.pop("explanation", "Filters updated.")
@@ -491,6 +601,7 @@ if user_input:
                 st.session_state.filter_state,
                 ip_types_raw,
                 edge_types_raw,
+                categories_raw,
             )
             st.session_state.filter_state = new_fs
 
@@ -508,7 +619,7 @@ if user_input:
             })
 
         except Exception as e:
-            error_msg = f"Sorry, I couldn't parse your request. Error: {e}"
+            error_msg = f"Sorry, I couldn't understand that request. Please try rephrasing. (Error: {e})"
             st.session_state.chat_display.append({"role": "assistant", "content": error_msg})
 
     run_query.clear()
