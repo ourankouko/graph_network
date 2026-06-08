@@ -421,6 +421,39 @@ if not search_term.strip():
 # -----------------------------
 # Main output
 # -----------------------------
+st.subheader("Network graph")
+st.markdown(
+    """
+    **Legend:**  
+    🔴 NUS-affiliated node  
+    🟠 QS Subject  
+    🔵 Patent applicant  
+    🟢 Publication institute  
+    """
+)
+
+if df.empty:
+    st.warning("No edges found for the selected filters.")
+else:
+    html = build_pyvis_graph(df)
+    components.html(html, height=780, scrolling=True)
+
+    n_nodes = pd.concat([df["SOURCE"], df["TARGET"]]).nunique()
+    n_edges = len(df)
+
+    st.caption(
+        f"Displayed {n_nodes:,} nodes and {n_edges:,} edges. "
+        "Drag nodes around, zoom, and use the physics controls if needed."
+    )
+
+with st.expander("Show edge table"):
+    st.dataframe(df, use_container_width=True)
+
+with st.expander("Show SQL"):
+    st.code(sql, language="sql")
+
+st.divider()
+
 # ---- LLM Chat ----
 st.subheader("💬 Ask the AI assistant")
 st.caption("Use natural language to filter the graph, e.g. _'Show NUS patents with weight above 10'_")
@@ -480,36 +513,3 @@ if user_input:
             st.session_state.chat_display.append({"role": "assistant", "content": error_msg})
 
     st.rerun()
-
-st.divider()
-
-st.subheader("Network graph")
-st.markdown(
-    """
-    **Legend:**  
-    🔴 NUS-affiliated node  
-    🟠 QS Subject  
-    🔵 Patent applicant  
-    🟢 Publication institute  
-    """
-)
-
-if df.empty:
-    st.warning("No edges found for the selected filters.")
-else:
-    html = build_pyvis_graph(df)
-    components.html(html, height=780, scrolling=True)
-
-    n_nodes = pd.concat([df["SOURCE"], df["TARGET"]]).nunique()
-    n_edges = len(df)
-
-    st.caption(
-        f"Displayed {n_nodes:,} nodes and {n_edges:,} edges. "
-        "Drag nodes around, zoom, and use the physics controls if needed."
-    )
-
-with st.expander("Show edge table"):
-    st.dataframe(df, use_container_width=True)
-
-with st.expander("Show SQL"):
-    st.code(sql, language="sql")
