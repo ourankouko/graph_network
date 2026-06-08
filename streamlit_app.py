@@ -333,13 +333,13 @@ def build_similar_no_collab_graph(results_df: pd.DataFrame, edges_df: pd.DataFra
         notebook=False,
         cdn_resources="in_line",
     )
-    net.barnes_hut(
-        gravity=-15000,
-        central_gravity=0.1,
-        spring_length=250,
-        spring_strength=0.015,
-        damping=0.85,
-        overlap=0.5,
+    net.force_atlas_2based(
+        gravity=-50,
+        central_gravity=0.01,
+        spring_length=100,
+        spring_strength=0.08,
+        damping=0.4,
+        overlap=0,
     )
 
     added_orgs = set()
@@ -397,7 +397,32 @@ def build_similar_no_collab_graph(results_df: pd.DataFrame, edges_df: pd.DataFra
     return net.generate_html(notebook=False)
 
 
-def build_pyvis_graph(df: pd.DataFrame) -> str:
+def inject_png_download(html: str, filename: str = "graph.png") -> str:
+    """Inject a PNG download button into PyVis HTML using canvas capture."""
+    button_js = f"""
+    <div style="text-align:right; padding: 6px 12px;">
+      <button onclick="downloadPNG()" style="
+        background:#0068C9; color:white; border:none;
+        padding:7px 16px; border-radius:6px; cursor:pointer; font-size:13px;">
+        ⬇️ Download PNG
+      </button>
+    </div>
+    <script>
+    function downloadPNG() {{
+      var canvas = document.querySelector('canvas');
+      if (!canvas) {{ alert('Graph not ready yet — please wait a moment and try again.'); return; }}
+      var link = document.createElement('a');
+      link.download = '{filename}';
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    }}
+    </script>
+    """
+    # Inject just before closing </body>
+    return html.replace("</body>", button_js + "</body>")
+
+
+def build_pyvis_graph(df: pd.DataFrame, highlight_term: str = None) -> str:
     net = Network(
         height="750px",
         width="100%",
@@ -408,16 +433,17 @@ def build_pyvis_graph(df: pd.DataFrame) -> str:
         cdn_resources="in_line",
     )
 
-    net.barnes_hut(
-        gravity=-30000,
-        central_gravity=0.3,
-        spring_length=180,
-        spring_strength=0.02,
-        damping=0.8,
-        overlap=0.5,
+    net.force_atlas_2based(
+        gravity=-50,
+        central_gravity=0.01,
+        spring_length=100,
+        spring_strength=0.08,
+        damping=0.4,
+        overlap=0,
     )
 
     added_nodes = set()
+    term = highlight_term.upper() if highlight_term else None
 
     for _, row in df.iterrows():
         source_id = row["SOURCE"]
@@ -429,30 +455,56 @@ def build_pyvis_graph(df: pd.DataFrame) -> str:
         weight = row["WEIGHT"]
         edge_type = row["EDGE_TYPE"]
 
+        # Determine highlight state
+        source_match = term and term in str(source_name).upper()
+        target_match = term and term in str(target_name).upper()
+        edge_highlighted = source_match or target_match
+
         if source_id not in added_nodes:
+            base_color = get_node_color(source_type, source_name, row["SOURCE_NUS_AFFILIATED"])
+            if term:
+                color = base_color if source_match else "#E8E8E8"
+                border = "#FF6600" if source_match else "#E8E8E8"
+                node_size = 20 if source_match else 5
+            else:
+                color = base_color
+                border = base_color
+                node_size = 10
+
             net.add_node(
                 source_id,
-                label=source_name,
+                label=source_name if (not term or source_match) else "",
                 title=f"{source_name}\nType: {source_type}\nCategory: {row['SOURCE_CATEGORY']}",
-                color=get_node_color(source_type, source_name, row["SOURCE_NUS_AFFILIATED"]),
-                value=1,
+                color={"background": color, "border": border},
+                value=node_size,
             )
             added_nodes.add(source_id)
 
         if target_id not in added_nodes:
+            base_color = get_node_color(target_type, target_name, row["TARGET_NUS_AFFILIATED"])
+            if term:
+                color = base_color if target_match else "#E8E8E8"
+                border = "#FF6600" if target_match else "#E8E8E8"
+                node_size = 20 if target_match else 5
+            else:
+                color = base_color
+                border = base_color
+                node_size = 10
+
             net.add_node(
                 target_id,
-                label=target_name,
+                label=target_name if (not term or target_match) else "",
                 title=f"{target_name}\nType: {target_type}\nCategory: {row['TARGET_CATEGORY']}",
-                color=get_node_color(target_type, target_name, row["TARGET_NUS_AFFILIATED"]),
-                value=1,
+                color={"background": color, "border": border},
+                value=node_size,
             )
             added_nodes.add(target_id)
 
         net.add_edge(
             source_id,
             target_id,
-            value=float(weight),
+            value=float(weight) if edge_highlighted or not term else 0.1,
+            color="#FF6600" if edge_highlighted else "#DDDDDD",
             title=f"Connection type: {edge_type}\nStrength: {weight}",
         )
 
@@ -771,6 +823,7 @@ elif query_mode == "similar_no_collab":
                 )
 
             html = build_similar_no_collab_graph(similar_df, edges_df)
+            html = inject_png_download(html, filename="potential_partners.png")
             components.html(html, height=780, scrolling=True)
             st.caption(
                 f"🔵 Blue nodes = potential partners ({len(similar_df)})  "
@@ -783,6 +836,15 @@ elif query_mode == "similar_no_collab":
             display_df.columns = ["Organisation", "Category", "Shared Subjects", "Collaboration Strength"]
             display_df.index = range(1, len(display_df) + 1)
             st.dataframe(display_df, use_container_width=True)
+
+            col1, col2 = st.columns([1, 5])
+            with col1:
+                st.download_button(
+                    label="⬇️ Download CSV",
+                    data=display_df.to_csv().encode("utf-8"),
+                    file_name="potential_partners.csv",
+                    mime="text/csv",
+                )
 
 else:
     # --- Standard graph mode ---
@@ -843,7 +905,15 @@ LIMIT {max_edges}
             "Try asking the AI assistant below."
         )
     else:
-        html = build_pyvis_graph(df)
+        # --- Node highlight search ---
+        highlight_term = st.text_input(
+            "🔍 Highlight a node",
+            placeholder="Type a node name to highlight it in the graph…",
+            key="highlight_input",
+        )
+
+        html = build_pyvis_graph(df, highlight_term=highlight_term.strip() if highlight_term else None)
+        html = inject_png_download(html, filename="collaboration_network.png")
         components.html(html, height=780, scrolling=True)
 
         n_nodes = pd.concat([df["SOURCE"], df["TARGET"]]).nunique()
@@ -855,6 +925,14 @@ LIMIT {max_edges}
 
     with st.expander("📊 View connection data"):
         st.dataframe(df, use_container_width=True)
+        col1, col2 = st.columns([1, 5])
+        with col1:
+            st.download_button(
+                label="⬇️ Download CSV",
+                data=df.to_csv(index=False).encode("utf-8"),
+                file_name="collaboration_network.csv",
+                mime="text/csv",
+            )
 
     with st.expander("🔍 View SQL query"):
         st.code(sql, language="sql")
