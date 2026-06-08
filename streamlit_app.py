@@ -370,14 +370,7 @@ def build_similar_no_collab_graph(results_df: pd.DataFrame, edges_df: pd.DataFra
             net.add_node(
                 org_id,
                 label=org_name,
-                title=(
-                    f"<div style='font-family:sans-serif;font-size:13px;padding:4px'>"
-                    f"<b>{org_name}</b><br>"
-                    f"<span style='color:#555'>Category:</span> {meta.get('category', '—')}<br>"
-                    f"<span style='color:#555'>Shared subjects:</span> {shared}<br>"
-                    f"<span style='color:#555'>Total strength:</span> {meta.get('weight', 0):.0f}"
-                    f"</div>"
-                ),
+                title=f"{org_name}\nCategory: {meta.get('category', '—')}\nShared subjects: {shared}\nTotal strength: {meta.get('weight', 0):.0f}",
                 color="#9DC3E6",
                 value=shared,
             )
@@ -387,12 +380,7 @@ def build_similar_no_collab_graph(results_df: pd.DataFrame, edges_df: pd.DataFra
             net.add_node(
                 subj_id,
                 label=subj_name,
-                title=(
-                    f"<div style='font-family:sans-serif;font-size:13px;padding:4px'>"
-                    f"<b>{subj_name}</b><br>"
-                    f"<span style='color:#555'>Research subject area</span>"
-                    f"</div>"
-                ),
+                title=f"{subj_name}\nResearch subject area",
                 color="#F4B183",
                 value=3,
             )
@@ -402,7 +390,7 @@ def build_similar_no_collab_graph(results_df: pd.DataFrame, edges_df: pd.DataFra
             org_id,
             subj_id,
             value=weight,
-            title=f"<div style='font-family:sans-serif;font-size:13px;padding:4px'>Strength: <b>{weight:.0f}</b></div>",
+            title=f"Strength: {weight:.0f}",
         )
 
     net.show_buttons(filter_=["physics"])
@@ -445,13 +433,7 @@ def build_pyvis_graph(df: pd.DataFrame) -> str:
             net.add_node(
                 source_id,
                 label=source_name,
-                title=(
-                    f"<div style='font-family:sans-serif;font-size:13px;padding:4px'>"
-                    f"<b>{source_name}</b><br>"
-                    f"<span style='color:#555'>Type:</span> {source_type}<br>"
-                    f"<span style='color:#555'>Category:</span> {row['SOURCE_CATEGORY']}"
-                    f"</div>"
-                ),
+                title=f"{source_name}\nType: {source_type}\nCategory: {row['SOURCE_CATEGORY']}",
                 color=get_node_color(source_type, source_name, row["SOURCE_NUS_AFFILIATED"]),
                 value=1,
             )
@@ -461,13 +443,7 @@ def build_pyvis_graph(df: pd.DataFrame) -> str:
             net.add_node(
                 target_id,
                 label=target_name,
-                title=(
-                    f"<div style='font-family:sans-serif;font-size:13px;padding:4px'>"
-                    f"<b>{target_name}</b><br>"
-                    f"<span style='color:#555'>Type:</span> {target_type}<br>"
-                    f"<span style='color:#555'>Category:</span> {row['TARGET_CATEGORY']}"
-                    f"</div>"
-                ),
+                title=f"{target_name}\nType: {target_type}\nCategory: {row['TARGET_CATEGORY']}",
                 color=get_node_color(target_type, target_name, row["TARGET_NUS_AFFILIATED"]),
                 value=1,
             )
@@ -477,12 +453,7 @@ def build_pyvis_graph(df: pd.DataFrame) -> str:
             source_id,
             target_id,
             value=float(weight),
-            title=(
-                f"<div style='font-family:sans-serif;font-size:13px;padding:4px'>"
-                f"<span style='color:#555'>Connection type:</span> {edge_type}<br>"
-                f"<span style='color:#555'>Strength:</span> {weight}"
-                f"</div>"
-            ),
+            title=f"Connection type: {edge_type}\nStrength: {weight}",
         )
 
     net.show_buttons(filter_=["physics"])
