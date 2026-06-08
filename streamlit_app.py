@@ -37,6 +37,7 @@ def create_session():
 
 session = create_session()
 
+client = anthropic.Anthropic(api_key=st.secrets["anthropic"]["api_key"])
 
 # -----------------------------
 # Helper functions
@@ -205,9 +206,7 @@ def extract_filters_from_llm(
     chat_history: list,
     available_ip_types: list,
     available_edge_types: list,
-) -> dict:
-    """Call Claude to parse the user's message into filter values."""
-    client = anthropic.Anthropic(api_key=st.secrets["anthropic"]["api_key"])
+) -> dict: 
 
     system = SYSTEM_PROMPT.replace(
         "[AVAILABLE_IP_TYPES]", ", ".join(available_ip_types)
@@ -364,67 +363,6 @@ with st.sidebar:
 
     st.divider()
 
-    # ---- LLM Chat ----
-    st.subheader("💬 Ask the AI assistant")
-    st.caption("Use natural language to filter the graph, e.g. _'Show NUS patents with weight above 10'_")
-
-    # Display chat history
-    for msg in st.session_state.chat_display:
-        if msg["role"] == "user":
-            st.chat_message("user").write(msg["content"])
-        else:
-            with st.chat_message("assistant"):
-                st.write(msg["content"])
-                if msg.get("filters"):
-                    with st.expander("Applied filters", expanded=False):
-                        st.json(msg["filters"])
-
-    # Chat input
-    user_input = st.chat_input("Ask anything about the network…")
-
-    if user_input:
-        # Show user message immediately
-        st.session_state.chat_display.append({"role": "user", "content": user_input})
-
-        with st.spinner("Thinking…"):
-            try:
-                parsed = extract_filters_from_llm(
-                    user_message=user_input,
-                    chat_history=st.session_state.chat_history,
-                    available_ip_types=ip_types_raw,
-                    available_edge_types=edge_types_raw,
-                )
-
-                explanation = parsed.pop("explanation", "Filters updated.")
-
-                new_fs = apply_llm_filters(
-                    parsed,
-                    st.session_state.filter_state,
-                    ip_types_raw,
-                    edge_types_raw,
-                )
-                st.session_state.filter_state = new_fs
-
-                # Build a readable summary of what changed
-                changed = {k: v for k, v in parsed.items() if v is not None}
-
-                # Store in chat histories
-                st.session_state.chat_history.append({"role": "user", "content": user_input})
-                st.session_state.chat_history.append({"role": "assistant", "content": explanation})
-
-                st.session_state.chat_display.append({
-                    "role": "assistant",
-                    "content": explanation,
-                    "filters": changed if changed else None,
-                })
-
-            except Exception as e:
-                error_msg = f"Sorry, I couldn't parse your request. Error: {e}"
-                st.session_state.chat_display.append({"role": "assistant", "content": error_msg})
-
-        st.rerun()
-
-
 # -----------------------------
 # Read effective filters (may have been updated by LLM)
 # -----------------------------
@@ -483,6 +421,68 @@ if not search_term.strip():
 # -----------------------------
 # Main output
 # -----------------------------
+# ---- LLM Chat ----
+st.subheader("💬 Ask the AI assistant")
+st.caption("Use natural language to filter the graph, e.g. _'Show NUS patents with weight above 10'_")
+
+# Display chat history
+for msg in st.session_state.chat_display:
+    if msg["role"] == "user":
+        st.chat_message("user").write(msg["content"])
+    else:
+        with st.chat_message("assistant"):
+            st.write(msg["content"])
+            if msg.get("filters"):
+                with st.expander("Applied filters", expanded=False):
+                    st.json(msg["filters"])
+
+# Chat input
+user_input = st.chat_input("Ask anything about the network…")
+
+if user_input:
+    # Show user message immediately
+    st.session_state.chat_display.append({"role": "user", "content": user_input})
+
+    with st.spinner("Thinking…"):
+        try:
+            parsed = extract_filters_from_llm(
+                user_message=user_input,
+                chat_history=st.session_state.chat_history,
+                available_ip_types=ip_types_raw,
+                available_edge_types=edge_types_raw,
+            )
+
+            explanation = parsed.pop("explanation", "Filters updated.")
+
+            new_fs = apply_llm_filters(
+                parsed,
+                st.session_state.filter_state,
+                ip_types_raw,
+                edge_types_raw,
+            )
+            st.session_state.filter_state = new_fs
+
+            # Build a readable summary of what changed
+            changed = {k: v for k, v in parsed.items() if v is not None}
+
+            # Store in chat histories
+            st.session_state.chat_history.append({"role": "user", "content": user_input})
+            st.session_state.chat_history.append({"role": "assistant", "content": explanation})
+
+            st.session_state.chat_display.append({
+                "role": "assistant",
+                "content": explanation,
+                "filters": changed if changed else None,
+            })
+
+        except Exception as e:
+            error_msg = f"Sorry, I couldn't parse your request. Error: {e}"
+            st.session_state.chat_display.append({"role": "assistant", "content": error_msg})
+
+    st.rerun()
+
+st.divider()
+
 st.subheader("Network graph")
 st.markdown(
     """
