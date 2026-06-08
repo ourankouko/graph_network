@@ -161,9 +161,35 @@ def run_similar_no_collab_query(
     Find organisations with similar subject interests to the given institution
     that have NOT directly appeared in any edge with it.
     Returns a ranked table with ORG_NAME, ORG_CATEGORY, SHARED_SUBJECTS, TOTAL_WEIGHT.
+
+    Actual edge types in data:
+      Applicant_Subject    (patents  — APP:: nodes to SUBJ:: nodes)
+      Institute_Subject    (publications — INST:: nodes to SUBJ:: nodes)
+      Applicant_Applicant  (patent co-applicants)
+      Institution_Institution (publication co-authors)
+    IP_TYPE values: 'Patents', 'Publications'
     """
     safe_inst = sql_escape(institution)
+
+    # IP filter — match actual values "Patents" / "Publications"
     ip_filter = f"AND IP_TYPE = '{sql_escape(ip_type)}'" if ip_type and ip_type != "All" else ""
+
+    # Subject edge types depend on ip_type
+    if ip_type == "Patents":
+        subject_edge_types = "('Applicant_Subject')"
+    elif ip_type == "Publications":
+        subject_edge_types = "('Institute_Subject')"
+    else:
+        subject_edge_types = "('Applicant_Subject', 'Institute_Subject')"
+
+    # Direct collab edge types depend on ip_type
+    if ip_type == "Patents":
+        collab_edge_types = "('Applicant_Applicant')"
+    elif ip_type == "Publications":
+        collab_edge_types = "('Institution_Institution')"
+    else:
+        collab_edge_types = "('Applicant_Applicant', 'Institution_Institution')"
+
     cat_filter = (
         f"AND (SOURCE_CATEGORY = '{sql_escape(category)}' OR TARGET_CATEGORY = '{sql_escape(category)}')"
         if category and category != "All" else ""
@@ -175,26 +201,26 @@ def run_similar_no_collab_query(
 
     sql = f"""
 WITH inst_subjects AS (
-    -- Step 1: all subjects NUS is connected to via APPLICANT-SUBJECT edges
+    -- Step 1: all subjects the institution is connected to
     SELECT DISTINCT
         CASE WHEN SOURCE_NAME ILIKE '%{safe_inst}%' THEN TARGET ELSE SOURCE END AS SUBJECT_ID
     FROM GRAPH_NETWORK.GRAPH.ALL_EDGES_ENRICHED
     WHERE (SOURCE_NAME ILIKE '%{safe_inst}%' OR TARGET_NAME ILIKE '%{safe_inst}%')
-    AND EDGE_TYPE = 'APPLICANT-SUBJECT'
+    AND EDGE_TYPE IN {subject_edge_types}
     {ip_filter}
     {subject_clause}
 ),
 org_subject_edges AS (
-    -- Step 2: all orgs connected to those same subjects, excluding NUS itself
+    -- Step 2: all orgs connected to those same subjects, excluding the institution itself
     SELECT
-        CASE WHEN SOURCE_TYPE = 'APPLICANT' THEN SOURCE ELSE TARGET END AS ORG_ID,
-        CASE WHEN SOURCE_TYPE = 'APPLICANT' THEN SOURCE_NAME ELSE TARGET_NAME END AS ORG_NAME,
-        CASE WHEN SOURCE_TYPE = 'APPLICANT' THEN SOURCE_CATEGORY ELSE TARGET_CATEGORY END AS ORG_CATEGORY,
+        CASE WHEN SOURCE_TYPE IN ('Applicant', 'Institutes') THEN SOURCE ELSE TARGET END AS ORG_ID,
+        CASE WHEN SOURCE_TYPE IN ('Applicant', 'Institutes') THEN SOURCE_NAME ELSE TARGET_NAME END AS ORG_NAME,
+        CASE WHEN SOURCE_TYPE IN ('Applicant', 'Institutes') THEN SOURCE_CATEGORY ELSE TARGET_CATEGORY END AS ORG_CATEGORY,
         CASE WHEN SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects) THEN SOURCE
              ELSE TARGET END AS MATCHED_SUBJECT_ID,
         WEIGHT
     FROM GRAPH_NETWORK.GRAPH.ALL_EDGES_ENRICHED
-    WHERE EDGE_TYPE = 'APPLICANT-SUBJECT'
+    WHERE EDGE_TYPE IN {subject_edge_types}
     {ip_filter}
     AND (SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects) OR TARGET IN (SELECT SUBJECT_ID FROM inst_subjects))
     AND SOURCE_NAME NOT ILIKE '%{safe_inst}%'
@@ -202,7 +228,7 @@ org_subject_edges AS (
     {cat_filter}
 ),
 org_matches AS (
-    -- Step 3: aggregate by org — count shared subjects and total weight
+    -- Step 3: aggregate — count distinct shared subjects and total weight per org
     SELECT
         ORG_ID,
         ORG_NAME,
@@ -213,13 +239,14 @@ org_matches AS (
     GROUP BY ORG_ID, ORG_NAME, ORG_CATEGORY
 ),
 direct_collabs AS (
-    -- Step 4: any org that has ever appeared in ANY edge directly with NUS
+    -- Step 4: any org that has ever appeared in a direct collaboration edge with the institution
     SELECT DISTINCT
         CASE WHEN SOURCE_NAME ILIKE '%{safe_inst}%' THEN TARGET ELSE SOURCE END AS COLLAB_ID
     FROM GRAPH_NETWORK.GRAPH.ALL_EDGES_ENRICHED
     WHERE (SOURCE_NAME ILIKE '%{safe_inst}%' OR TARGET_NAME ILIKE '%{safe_inst}%')
+    AND EDGE_TYPE IN {collab_edge_types}
 )
--- Step 5: exclude direct collaborators
+-- Step 5: return orgs with shared subjects that never directly collaborated
 SELECT
     ORG_ID,
     ORG_NAME,
@@ -366,8 +393,12 @@ Based on the user's natural language request, extract their intent and return a 
                                         // "standard"          — normal graph filter mode (default)
                                         // "similar_no_collab" — find orgs with similar research interests that have NOT yet collaborated with the searched institution.
                                         //   Use this when user says things like: "similar interests but no collaboration", "hasn't worked with", "potential new partners", "never collaborated", "who to reach out to", "didn't collaborate"
-  "ip_type": "<string or null>",        // "PATENT" or "PUBLICATION", or null for both. Available: [AVAILABLE_IP_TYPES]
+  "ip_type": "<string or null>",        // "Patents" or "Publications", or null for both. Available: [AVAILABLE_IP_TYPES]
   "edge_type": "<string or null>",      // type of connection, or null for all. Available: [AVAILABLE_EDGE_TYPES]
+                                        // Applicant_Applicant = patent co-applicants
+                                        // Applicant_Subject = patent-to-subject links
+                                        // Institute_Subject = publication-to-subject links
+                                        // Institution_Institution = publication co-authors
   "search_term": "<string or null>",    // institution name to focus on, or null
   "category": "<string or null>",       // organisation category, or null for all. Available: [AVAILABLE_CATEGORIES]
   "min_weight": <integer or null>,      // minimum collaboration strength, or null to keep current
@@ -433,16 +464,13 @@ def apply_llm_filters(parsed: dict, current_state: dict, available_ip_types: lis
     new_state = current_state.copy()
 
     if parsed.get("ip_type") is not None:
-        val = parsed["ip_type"].upper()
-        match = next((t for t in available_ip_types if t.upper() == val), None)
+        val = parsed["ip_type"].upper().rstrip("S")  # "PATENTS"→"PATENT", "PUBLICATIONS"→"PUBLICATION"
+        match = next((t for t in available_ip_types if t.upper().rstrip("S") == val), None)
         new_state["ip_type"] = match if match else "All"
-    else:
-        # null means don't change
-        pass
 
     if parsed.get("edge_type") is not None:
-        val = parsed["edge_type"].upper()
-        match = next((t for t in available_edge_types if t.upper() == val), None)
+        val = parsed["edge_type"].upper().replace("-", "_").replace(" ", "_")
+        match = next((t for t in available_edge_types if t.upper().replace("-", "_") == val), None)
         new_state["edge_type"] = match if match else "All"
 
     if parsed.get("category") is not None:
