@@ -221,7 +221,7 @@ def extract_filters_from_llm(
     messages.append({"role": "user", "content": user_message})
 
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-4-5",
         max_tokens=512,
         system=system,
         messages=messages,
