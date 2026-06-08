@@ -150,57 +150,76 @@ def keep_top_n_neighbours(df: pd.DataFrame, search_term: str, top_n: int) -> pd.
     ].copy()
 
 
-def run_similar_no_collab_query(institution: str, ip_type: str = "PUBLICATION", category: str = None, top_n: int = 20) -> pd.DataFrame:
+def run_similar_no_collab_query(
+    institution: str,
+    ip_type: str = None,
+    category: str = None,
+    top_n: int = 20,
+    subject_filter: str = None,
+) -> pd.DataFrame:
     """
     Find organisations with similar subject interests to the given institution
-    that have NOT directly collaborated with it.
-    Returns a ranked table with CORP_NAME, SHARED_SUBJECTS, TOTAL_WEIGHT.
+    that have NOT directly appeared in any edge with it.
+    Returns a ranked table with ORG_NAME, ORG_CATEGORY, SHARED_SUBJECTS, TOTAL_WEIGHT.
     """
     safe_inst = sql_escape(institution)
     ip_filter = f"AND IP_TYPE = '{sql_escape(ip_type)}'" if ip_type and ip_type != "All" else ""
-    cat_filter = f"AND TARGET_CATEGORY = '{sql_escape(category)}'" if category and category != "All" else ""
+    cat_filter = (
+        f"AND (SOURCE_CATEGORY = '{sql_escape(category)}' OR TARGET_CATEGORY = '{sql_escape(category)}')"
+        if category and category != "All" else ""
+    )
+    subject_clause = (
+        f"AND (SOURCE_NAME ILIKE '%{sql_escape(subject_filter)}%' OR TARGET_NAME ILIKE '%{sql_escape(subject_filter)}%')"
+        if subject_filter else ""
+    )
 
     sql = f"""
 WITH inst_subjects AS (
+    -- Step 1: all subjects NUS is connected to via APPLICANT-SUBJECT edges
     SELECT DISTINCT
-        CASE WHEN SOURCE_NAME ILIKE '%{safe_inst}%' THEN TARGET ELSE SOURCE END AS SUBJECT_ID,
-        CASE WHEN SOURCE_NAME ILIKE '%{safe_inst}%' THEN TARGET_NAME ELSE SOURCE_NAME END AS SUBJECT_NAME
+        CASE WHEN SOURCE_NAME ILIKE '%{safe_inst}%' THEN TARGET ELSE SOURCE END AS SUBJECT_ID
     FROM GRAPH_NETWORK.GRAPH.ALL_EDGES_ENRICHED
     WHERE (SOURCE_NAME ILIKE '%{safe_inst}%' OR TARGET_NAME ILIKE '%{safe_inst}%')
-    {ip_filter}
     AND EDGE_TYPE = 'APPLICANT-SUBJECT'
+    {ip_filter}
+    {subject_clause}
 ),
-org_matches AS (
+org_subject_edges AS (
+    -- Step 2: all orgs connected to those same subjects, excluding NUS itself
     SELECT
         CASE WHEN SOURCE_TYPE = 'APPLICANT' THEN SOURCE ELSE TARGET END AS ORG_ID,
         CASE WHEN SOURCE_TYPE = 'APPLICANT' THEN SOURCE_NAME ELSE TARGET_NAME END AS ORG_NAME,
         CASE WHEN SOURCE_TYPE = 'APPLICANT' THEN SOURCE_CATEGORY ELSE TARGET_CATEGORY END AS ORG_CATEGORY,
-        COUNT(DISTINCT
-            CASE WHEN SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects)
-                      OR TARGET IN (SELECT SUBJECT_ID FROM inst_subjects)
-                 THEN COALESCE(
-                     CASE WHEN SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects) THEN SOURCE END,
-                     CASE WHEN TARGET IN (SELECT SUBJECT_ID FROM inst_subjects) THEN TARGET END
-                 ) END
-        ) AS SHARED_SUBJECTS,
-        SUM(WEIGHT) AS TOTAL_WEIGHT
+        CASE WHEN SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects) THEN SOURCE
+             ELSE TARGET END AS MATCHED_SUBJECT_ID,
+        WEIGHT
     FROM GRAPH_NETWORK.GRAPH.ALL_EDGES_ENRICHED
     WHERE EDGE_TYPE = 'APPLICANT-SUBJECT'
     {ip_filter}
-    AND (SOURCE_TYPE = 'APPLICANT' OR TARGET_TYPE = 'APPLICANT')
     AND (SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects) OR TARGET IN (SELECT SUBJECT_ID FROM inst_subjects))
     AND SOURCE_NAME NOT ILIKE '%{safe_inst}%'
     AND TARGET_NAME NOT ILIKE '%{safe_inst}%'
     {cat_filter}
+),
+org_matches AS (
+    -- Step 3: aggregate by org — count shared subjects and total weight
+    SELECT
+        ORG_ID,
+        ORG_NAME,
+        ORG_CATEGORY,
+        COUNT(DISTINCT MATCHED_SUBJECT_ID) AS SHARED_SUBJECTS,
+        SUM(WEIGHT) AS TOTAL_WEIGHT
+    FROM org_subject_edges
     GROUP BY ORG_ID, ORG_NAME, ORG_CATEGORY
 ),
 direct_collabs AS (
+    -- Step 4: any org that has ever appeared in ANY edge directly with NUS
     SELECT DISTINCT
         CASE WHEN SOURCE_NAME ILIKE '%{safe_inst}%' THEN TARGET ELSE SOURCE END AS COLLAB_ID
     FROM GRAPH_NETWORK.GRAPH.ALL_EDGES_ENRICHED
     WHERE (SOURCE_NAME ILIKE '%{safe_inst}%' OR TARGET_NAME ILIKE '%{safe_inst}%')
-    AND EDGE_TYPE = 'INSTITUTION_INSTITUTION'
 )
+-- Step 5: exclude direct collaborators
 SELECT
     ORG_ID,
     ORG_NAME,
@@ -209,7 +228,7 @@ SELECT
     TOTAL_WEIGHT
 FROM org_matches
 WHERE ORG_ID NOT IN (SELECT COLLAB_ID FROM direct_collabs)
-AND ORG_NAME NOT ILIKE '%{safe_inst}%'
+AND SHARED_SUBJECTS > 0
 ORDER BY SHARED_SUBJECTS DESC, TOTAL_WEIGHT DESC
 LIMIT {top_n}
 """
@@ -356,6 +375,7 @@ Based on the user's natural language request, extract their intent and return a 
                                         // For "top N" requests: set max_edges=300 and top_n_nodes=N instead.
   "top_n_nodes": <integer or null>,     // for "top N partners" in standard mode, set to N. Leave null otherwise.
   "top_n_results": <integer or null>,   // for "similar_no_collab" mode only: how many results to return. Default null (will use 20).
+  "subject_filter": "<string or null>", // for "similar_no_collab" mode: scope the search to a specific subject area mentioned by the user (e.g. "COMPUTER SCIENCE & INFORMATION SYSTEMS"). Use the exact subject name if mentioned, or null for all subjects.
   "explanation": "<friendly 1-2 sentence explanation of what the results will show>"
 }
 
@@ -442,6 +462,7 @@ def apply_llm_filters(parsed: dict, current_state: dict, available_ip_types: lis
     new_state["top_n_nodes"] = int(parsed["top_n_nodes"]) if parsed.get("top_n_nodes") is not None else None
     new_state["query_mode"] = parsed.get("query_mode", "standard") or "standard"
     new_state["top_n_results"] = int(parsed["top_n_results"]) if parsed.get("top_n_results") is not None else None
+    new_state["subject_filter"] = parsed.get("subject_filter") or None
 
     return new_state
 
@@ -497,6 +518,7 @@ if "filter_state" not in st.session_state:
         "top_n_nodes": None,
         "query_mode": "standard",
         "top_n_results": None,
+        "subject_filter": None,
     }
 
 if "chat_history" not in st.session_state:
@@ -518,8 +540,7 @@ with st.sidebar:
         ip_types,
         index=ip_types.index(st.session_state.filter_state["ip_type"]) if st.session_state.filter_state["ip_type"] in ip_types else 0,
         key="sb_ip_type",
-        on_change=lambda: (st.session_state.filter_state.update({"ip_type": st.session_state.sb_ip_type, "top_n_nodes": None, "query_mode": "standard"}),
-                          run_query.clear()),
+        on_change=lambda: st.session_state.filter_state.update({"ip_type": st.session_state.sb_ip_type, "top_n_nodes": None, "query_mode": "standard"}),
     )
 
     st.selectbox(
@@ -527,8 +548,7 @@ with st.sidebar:
         edge_types,
         index=edge_types.index(st.session_state.filter_state["edge_type"]) if st.session_state.filter_state["edge_type"] in edge_types else 0,
         key="sb_edge_type",
-        on_change=lambda: (st.session_state.filter_state.update({"edge_type": st.session_state.sb_edge_type, "top_n_nodes": None, "query_mode": "standard"}),
-                          run_query.clear()),
+        on_change=lambda: st.session_state.filter_state.update({"edge_type": st.session_state.sb_edge_type, "top_n_nodes": None, "query_mode": "standard"}),
     )
 
     st.selectbox(
@@ -536,8 +556,7 @@ with st.sidebar:
         categories,
         index=categories.index(st.session_state.filter_state["category"]) if st.session_state.filter_state["category"] in categories else 0,
         key="sb_category",
-        on_change=lambda: (st.session_state.filter_state.update({"category": st.session_state.sb_category, "top_n_nodes": None, "query_mode": "standard"}),
-                          run_query.clear()),
+        on_change=lambda: st.session_state.filter_state.update({"category": st.session_state.sb_category, "top_n_nodes": None, "query_mode": "standard"}),
     )
 
     st.text_input(
@@ -545,8 +564,7 @@ with st.sidebar:
         value=st.session_state.filter_state["search_term"],
         placeholder="e.g. NATIONAL UNIVERSITY OF SINGAPORE",
         key="sb_search",
-        on_change=lambda: (st.session_state.filter_state.update({"search_term": st.session_state.sb_search, "top_n_nodes": None, "query_mode": "standard"}),
-                          run_query.clear()),
+        on_change=lambda: st.session_state.filter_state.update({"search_term": st.session_state.sb_search, "top_n_nodes": None, "query_mode": "standard"}),
     )
 
     st.number_input(
@@ -554,8 +572,7 @@ with st.sidebar:
         min_value=1,
         value=st.session_state.filter_state["min_weight"],
         key="sb_min_weight",
-        on_change=lambda: (st.session_state.filter_state.update({"min_weight": st.session_state.sb_min_weight}),
-                           run_query.clear()),
+        on_change=lambda: st.session_state.filter_state.update({"min_weight": st.session_state.sb_min_weight}),
     )
 
     st.slider(
@@ -565,8 +582,7 @@ with st.sidebar:
         value=st.session_state.filter_state["max_edges"],
         step=20,
         key="sb_max_edges",
-        on_change=lambda: (st.session_state.filter_state.update({"max_edges": st.session_state.sb_max_edges, "top_n_nodes": None}),
-                           run_query.clear()),
+        on_change=lambda: st.session_state.filter_state.update({"max_edges": st.session_state.sb_max_edges, "top_n_nodes": None}),
     )
 
     st.divider()
@@ -594,6 +610,7 @@ max_edges = fs["max_edges"]
 top_n_nodes = fs.get("top_n_nodes")
 query_mode = fs.get("query_mode", "standard")
 top_n_results = fs.get("top_n_results") or 20
+subject_filter = fs.get("subject_filter")
 
 
 # -----------------------------
@@ -617,6 +634,7 @@ if query_mode == "similar_no_collab":
                 ip_type=selected_ip_type if selected_ip_type != "All" else None,
                 category=selected_category if selected_category != "All" else None,
                 top_n=top_n_results,
+                subject_filter=subject_filter,
             )
 
         if similar_df.empty:
