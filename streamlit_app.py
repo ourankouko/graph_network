@@ -150,6 +150,127 @@ def keep_top_n_neighbours(df: pd.DataFrame, search_term: str, top_n: int) -> pd.
     ].copy()
 
 
+def run_similar_no_collab_query(institution: str, ip_type: str = "PUBLICATION", category: str = None, top_n: int = 20) -> pd.DataFrame:
+    """
+    Find organisations with similar subject interests to the given institution
+    that have NOT directly collaborated with it.
+    Returns a ranked table with CORP_NAME, SHARED_SUBJECTS, TOTAL_WEIGHT.
+    """
+    safe_inst = sql_escape(institution)
+    ip_filter = f"AND IP_TYPE = '{sql_escape(ip_type)}'" if ip_type and ip_type != "All" else ""
+    cat_filter = f"AND TARGET_CATEGORY = '{sql_escape(category)}'" if category and category != "All" else ""
+
+    sql = f"""
+WITH inst_subjects AS (
+    SELECT DISTINCT
+        CASE WHEN SOURCE_NAME ILIKE '%{safe_inst}%' THEN TARGET ELSE SOURCE END AS SUBJECT_ID,
+        CASE WHEN SOURCE_NAME ILIKE '%{safe_inst}%' THEN TARGET_NAME ELSE SOURCE_NAME END AS SUBJECT_NAME
+    FROM GRAPH_NETWORK.GRAPH.ALL_EDGES_ENRICHED
+    WHERE (SOURCE_NAME ILIKE '%{safe_inst}%' OR TARGET_NAME ILIKE '%{safe_inst}%')
+    {ip_filter}
+    AND EDGE_TYPE = 'APPLICANT-SUBJECT'
+),
+org_matches AS (
+    SELECT
+        CASE WHEN SOURCE_TYPE = 'APPLICANT' THEN SOURCE ELSE TARGET END AS ORG_ID,
+        CASE WHEN SOURCE_TYPE = 'APPLICANT' THEN SOURCE_NAME ELSE TARGET_NAME END AS ORG_NAME,
+        CASE WHEN SOURCE_TYPE = 'APPLICANT' THEN SOURCE_CATEGORY ELSE TARGET_CATEGORY END AS ORG_CATEGORY,
+        COUNT(DISTINCT
+            CASE WHEN SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects)
+                      OR TARGET IN (SELECT SUBJECT_ID FROM inst_subjects)
+                 THEN COALESCE(
+                     CASE WHEN SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects) THEN SOURCE END,
+                     CASE WHEN TARGET IN (SELECT SUBJECT_ID FROM inst_subjects) THEN TARGET END
+                 ) END
+        ) AS SHARED_SUBJECTS,
+        SUM(WEIGHT) AS TOTAL_WEIGHT
+    FROM GRAPH_NETWORK.GRAPH.ALL_EDGES_ENRICHED
+    WHERE EDGE_TYPE = 'APPLICANT-SUBJECT'
+    {ip_filter}
+    AND (SOURCE_TYPE = 'APPLICANT' OR TARGET_TYPE = 'APPLICANT')
+    AND (SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects) OR TARGET IN (SELECT SUBJECT_ID FROM inst_subjects))
+    AND SOURCE_NAME NOT ILIKE '%{safe_inst}%'
+    AND TARGET_NAME NOT ILIKE '%{safe_inst}%'
+    {cat_filter}
+    GROUP BY ORG_ID, ORG_NAME, ORG_CATEGORY
+),
+direct_collabs AS (
+    SELECT DISTINCT
+        CASE WHEN SOURCE_NAME ILIKE '%{safe_inst}%' THEN TARGET ELSE SOURCE END AS COLLAB_ID
+    FROM GRAPH_NETWORK.GRAPH.ALL_EDGES_ENRICHED
+    WHERE (SOURCE_NAME ILIKE '%{safe_inst}%' OR TARGET_NAME ILIKE '%{safe_inst}%')
+    AND EDGE_TYPE = 'INSTITUTION_INSTITUTION'
+)
+SELECT
+    ORG_ID,
+    ORG_NAME,
+    ORG_CATEGORY,
+    SHARED_SUBJECTS,
+    TOTAL_WEIGHT
+FROM org_matches
+WHERE ORG_ID NOT IN (SELECT COLLAB_ID FROM direct_collabs)
+AND ORG_NAME NOT ILIKE '%{safe_inst}%'
+ORDER BY SHARED_SUBJECTS DESC, TOTAL_WEIGHT DESC
+LIMIT {top_n}
+"""
+    return run_query(sql)
+
+
+def build_similar_no_collab_graph(results_df: pd.DataFrame, institution: str) -> str:
+    """Build a star-shaped pyvis graph: institution in centre, matched orgs around it."""
+    net = Network(
+        height="750px",
+        width="100%",
+        bgcolor="#ffffff",
+        font_color="#222222",
+        directed=False,
+        notebook=False,
+        cdn_resources="in_line",
+    )
+    net.barnes_hut(
+        gravity=-20000,
+        central_gravity=0.5,
+        spring_length=200,
+        spring_strength=0.02,
+        damping=0.8,
+        overlap=0.5,
+    )
+
+    # Add central institution node
+    net.add_node(
+        "INST_CENTER",
+        label=institution,
+        title=f"{institution}<br>Your institution",
+        color="#C00000",
+        value=10,
+        size=40,
+    )
+
+    for _, row in results_df.iterrows():
+        org_id = str(row["ORG_ID"])
+        org_name = str(row["ORG_NAME"])
+        shared = int(row["SHARED_SUBJECTS"])
+        weight = float(row["TOTAL_WEIGHT"])
+        category = str(row.get("ORG_CATEGORY", ""))
+
+        net.add_node(
+            org_id,
+            label=org_name,
+            title=f"{org_name}<br>Category: {category}<br>Shared subjects: {shared}<br>Total weight: {weight}",
+            color="#9DC3E6",
+            value=shared,
+        )
+        net.add_edge(
+            "INST_CENTER",
+            org_id,
+            value=shared,
+            title=f"Shared subjects: {shared}<br>Total weight: {weight}",
+        )
+
+    net.show_buttons(filter_=["physics"])
+    return net.generate_html(notebook=False)
+
+
 def build_pyvis_graph(df: pd.DataFrame) -> str:
     net = Network(
         height="750px",
@@ -217,36 +338,36 @@ def build_pyvis_graph(df: pd.DataFrame) -> str:
 # -----------------------------
 # LLM chat helper
 # -----------------------------
-SYSTEM_PROMPT = """You are an assistant helping users explore a graph network of patents and publications.
-The graph has filters a user can set. Based on the user's natural language request, extract their intent and return a JSON object with the following fields:
+SYSTEM_PROMPT = """You are a research collaboration discovery assistant helping users explore a graph network of patents and academic publications.
+
+Based on the user's natural language request, extract their intent and return a JSON object with the following fields:
 
 {
-  "ip_type": "<string or null>",        // e.g. "PATENT", "PUBLICATION", or null for All
-  "edge_type": "<string or null>",      // e.g. "APPLICANT-SUBJECT", or null for All
-  "search_term": "<string or null>",    // name to search in source/target, or null
-  "min_weight": <integer or null>,      // minimum edge weight, or null to keep current
-  "max_edges": <integer or null>,       // max edges to show (20–1000), or null to keep current.
-                                        // IMPORTANT: when user asks for "top N corporations/institutes/nodes",
-                                        // do NOT set max_edges to N. Instead set max_edges to a larger number
-                                        // like 200 and let the weight ordering handle ranking. Only set
-                                        // max_edges small (e.g. 20-50) if the user explicitly wants to limit
-                                        // the total number of edges shown on the graph.
-  "category": "<string or null>",       // organisation category e.g. "CORPORATION", "HOSPITAL", "INSTITUTE", or null for All
-                                        // available categories: [AVAILABLE_CATEGORIES]
-  "top_n_nodes": <integer or null>,     // when user asks "top N" partners/collaborators, set this to N.
-                                        // This filters the graph to show only the N strongest neighbours
-                                        // of the searched institution ranked by collaboration strength.
-                                        // Leave null if the user does not specify a number.
-  "explanation": "<short human-readable summary of what you understood>"
+  "query_mode": "<string>",             // REQUIRED. One of:
+                                        // "standard"          — normal graph filter mode (default)
+                                        // "similar_no_collab" — find orgs with similar research interests that have NOT yet collaborated with the searched institution.
+                                        //   Use this when user says things like: "similar interests but no collaboration", "hasn't worked with", "potential new partners", "never collaborated", "who to reach out to", "didn't collaborate"
+  "ip_type": "<string or null>",        // "PATENT" or "PUBLICATION", or null for both. Available: [AVAILABLE_IP_TYPES]
+  "edge_type": "<string or null>",      // type of connection, or null for all. Available: [AVAILABLE_EDGE_TYPES]
+  "search_term": "<string or null>",    // institution name to focus on, or null
+  "category": "<string or null>",       // organisation category, or null for all. Available: [AVAILABLE_CATEGORIES]
+  "min_weight": <integer or null>,      // minimum collaboration strength, or null to keep current
+  "max_edges": <integer or null>,       // max edges to load (20–1000), or null to keep current.
+                                        // For "top N" requests: set max_edges=300 and top_n_nodes=N instead.
+  "top_n_nodes": <integer or null>,     // for "top N partners" in standard mode, set to N. Leave null otherwise.
+  "top_n_results": <integer or null>,   // for "similar_no_collab" mode only: how many results to return. Default null (will use 20).
+  "explanation": "<friendly 1-2 sentence explanation of what the results will show>"
 }
 
 Rules:
-- Only set fields the user explicitly or clearly implies. Leave others null (meaning: do not change).
-- ip_type must be one of the exact values from this list (case-insensitive match): [AVAILABLE_IP_TYPES]
-- edge_type must be one of the exact values from this list: [AVAILABLE_EDGE_TYPES]
-- category must be one of the exact values from this list: [AVAILABLE_CATEGORIES]
+- query_mode is ALWAYS required. Default to "standard" unless the user clearly wants "similar_no_collab".
+- Only set other fields the user explicitly implies. Leave others null (do not change).
+- ip_type must exactly match one of: [AVAILABLE_IP_TYPES]
+- edge_type must exactly match one of: [AVAILABLE_EDGE_TYPES]
+- category must exactly match one of: [AVAILABLE_CATEGORIES]
 - If the user mentions "NUS" or "National University of Singapore", set search_term to "NATIONAL UNIVERSITY OF SINGAPORE".
-- If the user says "reset", "clear", or "show everything", return all nulls except set ip_type=null, edge_type=null, search_term=null, min_weight=1, max_edges=800, category=null, top_n_nodes=null.
+- If the user says "reset", "clear", "start over", or "show everything", set query_mode="standard", ip_type=null, edge_type=null, search_term=null, min_weight=1, max_edges=800, category=null, top_n_nodes=null, top_n_results=null.
+- For "similar_no_collab" mode, search_term is required.
 - Always return ONLY valid JSON. No markdown fences, no extra text."""
 
 
@@ -319,6 +440,8 @@ def apply_llm_filters(parsed: dict, current_state: dict, available_ip_types: lis
         new_state["max_edges"] = max(20, min(1000, int(parsed["max_edges"])))
 
     new_state["top_n_nodes"] = int(parsed["top_n_nodes"]) if parsed.get("top_n_nodes") is not None else None
+    new_state["query_mode"] = parsed.get("query_mode", "standard") or "standard"
+    new_state["top_n_results"] = int(parsed["top_n_results"]) if parsed.get("top_n_results") is not None else None
 
     return new_state
 
@@ -372,6 +495,8 @@ if "filter_state" not in st.session_state:
         "max_edges": 800,
         "category": "All",
         "top_n_nodes": None,
+        "query_mode": "standard",
+        "top_n_results": None,
     }
 
 if "chat_history" not in st.session_state:
@@ -393,7 +518,7 @@ with st.sidebar:
         ip_types,
         index=ip_types.index(st.session_state.filter_state["ip_type"]) if st.session_state.filter_state["ip_type"] in ip_types else 0,
         key="sb_ip_type",
-        on_change=lambda: st.session_state.filter_state.update({"ip_type": st.session_state.sb_ip_type, "top_n_nodes": None}),
+        on_change=lambda: st.session_state.filter_state.update({"ip_type": st.session_state.sb_ip_type, "top_n_nodes": None, "query_mode": "standard"}),
     )
 
     st.selectbox(
@@ -401,7 +526,7 @@ with st.sidebar:
         edge_types,
         index=edge_types.index(st.session_state.filter_state["edge_type"]) if st.session_state.filter_state["edge_type"] in edge_types else 0,
         key="sb_edge_type",
-        on_change=lambda: st.session_state.filter_state.update({"edge_type": st.session_state.sb_edge_type, "top_n_nodes": None}),
+        on_change=lambda: st.session_state.filter_state.update({"edge_type": st.session_state.sb_edge_type, "top_n_nodes": None, "query_mode": "standard"}),
     )
 
     st.selectbox(
@@ -409,7 +534,7 @@ with st.sidebar:
         categories,
         index=categories.index(st.session_state.filter_state["category"]) if st.session_state.filter_state["category"] in categories else 0,
         key="sb_category",
-        on_change=lambda: st.session_state.filter_state.update({"category": st.session_state.sb_category, "top_n_nodes": None}),
+        on_change=lambda: st.session_state.filter_state.update({"category": st.session_state.sb_category, "top_n_nodes": None, "query_mode": "standard"}),
     )
 
     st.text_input(
@@ -417,7 +542,7 @@ with st.sidebar:
         value=st.session_state.filter_state["search_term"],
         placeholder="e.g. NATIONAL UNIVERSITY OF SINGAPORE",
         key="sb_search",
-        on_change=lambda: st.session_state.filter_state.update({"search_term": st.session_state.sb_search, "top_n_nodes": None}),
+        on_change=lambda: st.session_state.filter_state.update({"search_term": st.session_state.sb_search, "top_n_nodes": None, "query_mode": "standard"}),
     )
 
     st.number_input(
@@ -461,34 +586,72 @@ search_term = fs["search_term"]
 min_weight = fs["min_weight"]
 max_edges = fs["max_edges"]
 top_n_nodes = fs.get("top_n_nodes")
+query_mode = fs.get("query_mode", "standard")
+top_n_results = fs.get("top_n_results") or 20
 
 
 # -----------------------------
-# Build SQL
+# Main output
 # -----------------------------
-where_clauses = [f"WEIGHT >= {min_weight}"]
+st.subheader("🗺️ Collaboration Network")
 
-if selected_ip_type != "All":
-    where_clauses.append(f"IP_TYPE = '{sql_escape(selected_ip_type)}'")
+if query_mode == "similar_no_collab":
+    # --- Similar interests, no prior collaboration mode ---
+    if not search_term.strip():
+        st.warning("Please specify an institution to search from. Try asking: _'Show corporations with similar interests to NUS in publications that haven't collaborated with NUS'_")
+    else:
+        st.markdown(
+            f"Showing organisations with **similar research interests** to **{search_term.title()}** "
+            f"that have **not yet directly collaborated** with it. "
+            "Ranked by number of shared subjects. Hover over nodes for details."
+        )
+        with st.spinner("Running analysis…"):
+            similar_df = run_similar_no_collab_query(
+                institution=search_term.strip(),
+                ip_type=selected_ip_type if selected_ip_type != "All" else None,
+                category=selected_category if selected_category != "All" else None,
+                top_n=top_n_results,
+            )
 
-if selected_edge_type != "All":
-    where_clauses.append(f"EDGE_TYPE = '{sql_escape(selected_edge_type)}'")
+        if similar_df.empty:
+            st.info("No matches found. Try broadening the filters — e.g. remove the category filter or change the output type.")
+        else:
+            html = build_similar_no_collab_graph(similar_df, search_term.strip())
+            components.html(html, height=780, scrolling=True)
+            st.caption(f"Showing {len(similar_df):,} potential collaboration partners ranked by shared research subjects.")
 
-if selected_category != "All":
-    safe_cat = sql_escape(selected_category)
-    where_clauses.append(
-        f"(SOURCE_CATEGORY = '{safe_cat}' OR TARGET_CATEGORY = '{safe_cat}')"
+            st.subheader("📋 Ranked results")
+            display_df = similar_df[["ORG_NAME", "ORG_CATEGORY", "SHARED_SUBJECTS", "TOTAL_WEIGHT"]].copy()
+            display_df.columns = ["Organisation", "Category", "Shared Subjects", "Collaboration Strength"]
+            display_df.index = range(1, len(display_df) + 1)
+            st.dataframe(display_df, use_container_width=True)
+
+else:
+    # --- Standard graph mode ---
+    st.markdown(
+        "Nodes represent institutions, corporations, or research subjects. "
+        "Thicker lines indicate stronger collaboration. **Hover over any node or edge** for details."
     )
 
-if search_term.strip():
-    safe_search = sql_escape(search_term.strip())
-    where_clauses.append(
-        f"(SOURCE_NAME ILIKE '%{safe_search}%' OR TARGET_NAME ILIKE '%{safe_search}%')"
-    )
+    where_clauses = [f"WEIGHT >= {min_weight}"]
 
-where_sql = " AND ".join(where_clauses)
+    if selected_ip_type != "All":
+        where_clauses.append(f"IP_TYPE = '{sql_escape(selected_ip_type)}'")
 
-sql = f"""
+    if selected_edge_type != "All":
+        where_clauses.append(f"EDGE_TYPE = '{sql_escape(selected_edge_type)}'")
+
+    if selected_category != "All":
+        safe_cat = sql_escape(selected_category)
+        where_clauses.append(f"(SOURCE_CATEGORY = '{safe_cat}' OR TARGET_CATEGORY = '{safe_cat}')")
+
+    if search_term.strip():
+        safe_search = sql_escape(search_term.strip())
+        where_clauses.append(f"(SOURCE_NAME ILIKE '%{safe_search}%' OR TARGET_NAME ILIKE '%{safe_search}%')")
+
+    where_sql = " AND ".join(where_clauses)
+
+    sql = f"""
 SELECT
     SOURCE,
     SOURCE_NAME,
@@ -509,53 +672,44 @@ ORDER BY WEIGHT DESC
 LIMIT {max_edges}
 """
 
-df = run_query(sql)
+    df = run_query(sql)
 
-if top_n_nodes and search_term.strip():
-    df = keep_top_n_neighbours(df, search_term.strip(), top_n_nodes)
-elif not search_term.strip():
-    df = keep_top_communities(df, top_n=10)
+    if top_n_nodes and search_term.strip():
+        df = keep_top_n_neighbours(df, search_term.strip(), top_n_nodes)
+    elif not search_term.strip():
+        df = keep_top_communities(df, top_n=10)
 
+    if df.empty:
+        st.info(
+            "No connections found for the selected filters. "
+            "Try asking the AI assistant below."
+        )
+    else:
+        html = build_pyvis_graph(df)
+        components.html(html, height=780, scrolling=True)
 
-# -----------------------------
-# Main output
-# -----------------------------
-st.subheader("Network graph")
-st.markdown(
-    """
-    **Legend:**  
-    🔴 NUS-affiliated node  
-    🟠 QS Subject  
-    🔵 Patent applicant  
-    🟢 Publication institute  
-    """
-)
+        n_nodes = pd.concat([df["SOURCE"], df["TARGET"]]).nunique()
+        n_edges = len(df)
+        st.caption(
+            f"Showing {n_nodes:,} institutions across {n_edges:,} connections. "
+            "Drag nodes to rearrange, scroll to zoom."
+        )
 
-if df.empty:
-    st.warning("No edges found for the selected filters.")
-else:
-    html = build_pyvis_graph(df)
-    components.html(html, height=780, scrolling=True)
+    with st.expander("📊 View connection data"):
+        st.dataframe(df, use_container_width=True)
 
-    n_nodes = pd.concat([df["SOURCE"], df["TARGET"]]).nunique()
-    n_edges = len(df)
-
-    st.caption(
-        f"Displayed {n_nodes:,} nodes and {n_edges:,} edges. "
-        "Drag nodes around, zoom, and use the physics controls if needed."
-    )
-
-with st.expander("Show edge table"):
-    st.dataframe(df, use_container_width=True)
-
-with st.expander("Show SQL"):
-    st.code(sql, language="sql")
+    with st.expander("🔍 View SQL query"):
+        st.code(sql, language="sql")
 
 st.divider()
 
 # ---- LLM Chat ----
-st.subheader("💬 Ask the AI assistant")
-st.caption("Use natural language to filter the graph, e.g. _'Show NUS patents with weight above 10'_")
+st.subheader("💬 AI Research Assistant")
+st.caption(
+    "Ask in plain language to explore the network. Try: "
+    "_'Who are the top 10 institutions collaborating with NUS on publications?'_ or "
+    "_'Show corporations with similar interests to NUS that haven\\'t collaborated with NUS before'_"
+)
 
 # Display chat history
 for msg in st.session_state.chat_display:
