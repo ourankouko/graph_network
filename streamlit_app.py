@@ -512,4 +512,5 @@ if user_input:
             error_msg = f"Sorry, I couldn't parse your request. Error: {e}"
             st.session_state.chat_display.append({"role": "assistant", "content": error_msg})
 
+    run_query.clear()
     st.rerun()
