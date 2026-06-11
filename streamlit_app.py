@@ -12,7 +12,7 @@ import networkx as nx
 # -----------------------------
 # Page setup
 # -----------------------------
-st.set_page_config(page_title="Graph Network Explorer", layout="wide")
+st.set_page_config(page_title="Research Collaboration Explorer", layout="wide", initial_sidebar_state="collapsed")
 
 st.title("Graph Network Explorer")
 st.write("Explore patent and publication graph networks from Snowflake.")
@@ -1259,210 +1259,212 @@ has_queried = fs.get("has_queried", False)
 
 
 # -----------------------------
-# Main output
+# Two column layout
 # -----------------------------
-st.subheader("🗺️ Collaboration Network")
-st.markdown(
-    "<span style='font-size:13px'>"
-    "<span style='color:#ff9933'>■</span> NUS-affiliated &nbsp;|&nbsp; "
-    "<span style='color:#ff6b6b'>■</span> New opportunity &nbsp;|&nbsp; "
-    "<span style='color:#9DC3E6'>■</span> Patent applicant / existing partner &nbsp;|&nbsp; "
-    "<span style='color:#33cccc'>■</span> Publication institute &nbsp;|&nbsp; "
-    "<span style='color:#FFD700'>■</span> Patent subject &nbsp;|&nbsp; "
-    "<span style='color:#F4B183'>■</span> Publication subject &nbsp;|&nbsp; "
-    "<span style='color:#D9D9D9'>■</span> Other"
-    "</span>",
-    unsafe_allow_html=True,
-)
+graph_col, chat_col = st.columns([3, 2], gap="large")
 
-if not has_queried:
-    st.info(
-        "👋 **Welcome to the Research Collaboration Explorer!**\n\n"
-        "Use the AI assistant below to get started. Here are some things you can ask:\n\n"
-        "- _'Show me the top 10 corporations collaborating with NUS on publications'_\n"
-        "- _'Show NUS patent partners in engineering'_\n"
-        "- _'Show corporations with similar research interests to NUS that haven\\'t collaborated before'_\n\n"
-        "Or use the manual filters in the sidebar."
+with graph_col:
+    st.subheader("🗺️ Collaboration Network")
+    st.markdown(
+        "<span style='font-size:16px'>"
+        "<span style='color:#ff9933'>■</span> NUS-affiliated &nbsp;|&nbsp; "
+        "<span style='color:#ff6b6b'>■</span> New opportunity &nbsp;|&nbsp; "
+        "<span style='color:#9DC3E6'>■</span> Patent applicant / existing partner &nbsp;|&nbsp; "
+        "<span style='color:#33cccc'>■</span> Publication institute &nbsp;|&nbsp; "
+        "<span style='color:#FFD700'>■</span> Patent subject &nbsp;|&nbsp; "
+        "<span style='color:#F4B183'>■</span> Publication subject &nbsp;|&nbsp; "
+        "<span style='color:#D9D9D9'>■</span> Other"
+        "</span>",
+        unsafe_allow_html=True,
     )
 
-elif query_mode == "recommendation":
-    # --- Recommendation mode ---
-    rec_data = fs.get("recommendation_data")
-    if not rec_data:
-        st.info("Ask the AI assistant for recommendations — try: _'Recommend industry partners for NUS in AI'_")
-    else:
-        recs_df = pd.DataFrame(rec_data["recs_df"])
-        institution = rec_data["institution"]
-        subject_filter = rec_data.get("subject_filter")
-        org_ids = recs_df["ORG_ID"].tolist()
-
-        subject_context = f" in {subject_filter}" if subject_filter else ""
-        st.markdown(f"Showing supporting evidence for recommended industry partners for **{institution.title()}**{subject_context}.")
-
-        tab1, tab2 = st.tabs(["📚 Shared Research Subjects", "🌐 Partner Industry Network"])
-
-        with tab1:
-            st.markdown(
-                "<span style='font-size:12px'>"
-                "<span style='color:#ff6b6b'>■</span> New opportunity &nbsp;|&nbsp; "
-                "<span style='color:#9DC3E6'>■</span> Existing partner &nbsp;|&nbsp; "
-                "<span style='color:#FFD700'>■</span> Patent subjects &nbsp;|&nbsp; "
-                "<span style='color:#F4B183'>■</span> Publication subjects"
-                "</span>",
-                unsafe_allow_html=True,
-            )
-            with st.spinner("Loading shared subjects graph…"):
-                subj_edges_df = run_recommendation_subject_edges(institution, org_ids, subject_filter)
-            if subj_edges_df.empty:
-                st.info("No subject edges found.")
-            else:
-                html1 = build_recommendation_shared_subjects_graph(recs_df, subj_edges_df, institution)
-                html1 = inject_png_download(html1, "shared_subjects.png")
-                components.html(html1, height=620, scrolling=True)
-                col1, col2 = st.columns([1, 5])
-                with col1:
-                    st.download_button(
-                        label="⬇️ Download CSV",
-                        data=subj_edges_df[["ORG_NAME", "SUBJECT_NAME", "IP_TYPE", "WEIGHT"]].to_csv(index=False).encode("utf-8"),
-                        file_name="shared_subjects.csv",
-                        mime="text/csv",
-                        key="dl_shared_subjects",
-                    )
-
-        with tab2:
-            st.markdown(
-                "<span style='font-size:12px'>"
-                "<span style='color:#ff6b6b'>■</span> New opportunity &nbsp;|&nbsp; "
-                "<span style='color:#9DC3E6'>■</span> Existing partner &nbsp;|&nbsp; "
-                "<span style='color:#33cccc'>■</span> Their existing collaborators"
-                "</span>",
-                unsafe_allow_html=True,
-            )
-            with st.spinner("Loading industry network graph…"):
-                collab_df = run_org_collaborators_query(org_ids)
-            if collab_df.empty:
-                st.info("No collaborator data found.")
-            else:
-                html2 = build_recommendation_network_graph(recs_df, collab_df)
-                html2 = inject_png_download(html2, "industry_network.png")
-                components.html(html2, height=620, scrolling=True)
-                col1, col2 = st.columns([1, 5])
-                with col1:
-                    st.download_button(
-                        label="⬇️ Download CSV",
-                        data=collab_df[["SOURCE_NAME", "SOURCE_CATEGORY", "TARGET_NAME", "TARGET_CATEGORY", "EDGE_TYPE", "IP_TYPE", "WEIGHT"]].to_csv(index=False).encode("utf-8"),
-                        file_name="industry_network.csv",
-                        mime="text/csv",
-                        key="dl_industry_network",
-                    )
-
-        st.subheader("📋 Summary table")
-        summary_df = recs_df[[
-            "ORG_NAME", "ORG_CATEGORY",
-            "PATENT_SHARED_SUBJECTS", "PATENT_STRENGTH",
-            "PUB_SHARED_SUBJECTS", "PUB_STRENGTH",
-            "TOTAL_SHARED_SUBJECTS", "TOTAL_STRENGTH", "IS_NEW_OPPORTUNITY"
-        ]].copy()
-        summary_df.columns = [
-            "Organisation", "Category",
-            "Patent Subjects", "Patent Strength",
-            "Pub Subjects", "Pub Strength",
-            "Total Subjects", "Total Strength", "New Opportunity"
-        ]
-        summary_df.index = range(1, len(summary_df) + 1)
-        st.dataframe(summary_df, use_container_width=True)
-
-        col1, col2 = st.columns([1, 5])
-        with col1:
-            st.download_button(
-                label="⬇️ Download CSV",
-                data=summary_df.to_csv().encode("utf-8"),
-                file_name="recommendations.csv",
-                mime="text/csv",
-            )
-
-elif query_mode == "similar_no_collab":
-    # --- Similar interests, no prior collaboration mode ---
-    if not search_term.strip():
-        st.warning("Please specify an institution to search from. Try asking: _'Show corporations with similar interests to NUS in publications that haven't collaborated with NUS'_")
-    else:
-        st.markdown(
-            f"Showing organisations with **similar research interests** to **{search_term.title()}** "
-            f"that have **not yet directly collaborated** with it. "
-            "Ranked by number of shared subjects. Hover over nodes for details."
+    if not has_queried:
+        st.info(
+            "👋 **Welcome to the Research Collaboration Explorer!**\n\n"
+            "Use the AI assistant below to get started. Here are some things you can ask:\n\n"
+            "- _'Show me the top 10 corporations collaborating with NUS on publications'_\n"
+            "- _'Show NUS patent partners in engineering'_\n"
+            "- _'Show corporations with similar research interests to NUS that haven\\'t collaborated before'_\n\n"
+            "Or use the manual filters in the sidebar."
         )
-        with st.spinner("Running analysis…"):
-            similar_df = run_similar_no_collab_query(
-                institution=search_term.strip(),
-                ip_type=selected_ip_type if selected_ip_type != "All" else None,
-                category=selected_category if selected_category != "All" else None,
-                top_n=top_n_results,
-                subject_filter=subject_filter,
-            )
 
-        if similar_df.empty:
-            st.info("No matches found. Try broadening the filters — e.g. remove the category filter or change the output type.")
+    elif query_mode == "recommendation":
+        # --- Recommendation mode ---
+        rec_data = fs.get("recommendation_data")
+        if not rec_data:
+            st.info("Ask the AI assistant for recommendations — try: _'Recommend industry partners for NUS in AI'_")
         else:
-            # Fetch org→subject edges for the bipartite graph
-            org_ids = similar_df["ORG_ID"].tolist()
-            with st.spinner("Loading subject connections…"):
-                edges_df = run_similar_no_collab_subject_edges(
-                    institution=search_term.strip(),
-                    org_ids=org_ids,
-                    ip_type=selected_ip_type if selected_ip_type != "All" else None,
-                    subject_filter=subject_filter,
+            recs_df = pd.DataFrame(rec_data["recs_df"])
+            institution = rec_data["institution"]
+            subject_filter = rec_data.get("subject_filter")
+            org_ids = recs_df["ORG_ID"].tolist()
+
+            subject_context = f" in {subject_filter}" if subject_filter else ""
+            st.markdown(f"Showing supporting evidence for recommended industry partners for **{institution.title()}**{subject_context}.")
+
+            tab1, tab2 = st.tabs(["📚 Shared Research Subjects", "🌐 Partner Industry Network"])
+
+            with tab1:
+                st.markdown(
+                    "<span style='font-size:15px'>"
+                    "<span style='color:#ff6b6b'>■</span> New opportunity &nbsp;|&nbsp; "
+                    "<span style='color:#9DC3E6'>■</span> Existing partner &nbsp;|&nbsp; "
+                    "<span style='color:#FFD700'>■</span> Patent subjects &nbsp;|&nbsp; "
+                    "<span style='color:#F4B183'>■</span> Publication subjects"
+                    "</span>",
+                    unsafe_allow_html=True,
                 )
+                with st.spinner("Loading shared subjects graph…"):
+                    subj_edges_df = run_recommendation_subject_edges(institution, org_ids, subject_filter)
+                if subj_edges_df.empty:
+                    st.info("No subject edges found.")
+                else:
+                    html1 = build_recommendation_shared_subjects_graph(recs_df, subj_edges_df, institution)
+                    html1 = inject_png_download(html1, "shared_subjects.png")
+                    components.html(html1, height=620, scrolling=True)
+                    col1, col2 = st.columns([1, 5])
+                    with col1:
+                        st.download_button(
+                            label="⬇️ Download CSV",
+                            data=subj_edges_df[["ORG_NAME", "SUBJECT_NAME", "IP_TYPE", "WEIGHT"]].to_csv(index=False).encode("utf-8"),
+                            file_name="shared_subjects.csv",
+                            mime="text/csv",
+                            key="dl_shared_subjects",
+                        )
 
-            html = build_similar_no_collab_graph(similar_df, edges_df)
-            html = inject_png_download(html, filename="potential_partners.png")
-            components.html(html, height=780, scrolling=True)
-            st.caption(
-                f"🔵 Blue nodes = potential partners ({len(similar_df)})  "
-                f"🟠 Orange nodes = shared research subjects.  "
-                "Hover over any node or edge for details."
-            )
+            with tab2:
+                st.markdown(
+                    "<span style='font-size:15px'>"
+                    "<span style='color:#ff6b6b'>■</span> New opportunity &nbsp;|&nbsp; "
+                    "<span style='color:#9DC3E6'>■</span> Existing partner &nbsp;|&nbsp; "
+                    "<span style='color:#33cccc'>■</span> Their existing collaborators"
+                    "</span>",
+                    unsafe_allow_html=True,
+                )
+                with st.spinner("Loading industry network graph…"):
+                    collab_df = run_org_collaborators_query(org_ids)
+                if collab_df.empty:
+                    st.info("No collaborator data found.")
+                else:
+                    html2 = build_recommendation_network_graph(recs_df, collab_df)
+                    html2 = inject_png_download(html2, "industry_network.png")
+                    components.html(html2, height=620, scrolling=True)
+                    col1, col2 = st.columns([1, 5])
+                    with col1:
+                        st.download_button(
+                            label="⬇️ Download CSV",
+                            data=collab_df[["SOURCE_NAME", "SOURCE_CATEGORY", "TARGET_NAME", "TARGET_CATEGORY", "EDGE_TYPE", "IP_TYPE", "WEIGHT"]].to_csv(index=False).encode("utf-8"),
+                            file_name="industry_network.csv",
+                            mime="text/csv",
+                            key="dl_industry_network",
+                        )
 
-            st.subheader("📋 Ranked results")
-            display_df = similar_df[["ORG_NAME", "ORG_CATEGORY", "SHARED_SUBJECTS", "TOTAL_WEIGHT"]].copy()
-            display_df.columns = ["Organisation", "Category", "Shared Subjects", "Collaboration Strength"]
-            display_df.index = range(1, len(display_df) + 1)
-            st.dataframe(display_df, use_container_width=True)
+            st.subheader("📋 Summary table")
+            summary_df = recs_df[[
+                "ORG_NAME", "ORG_CATEGORY",
+                "PATENT_SHARED_SUBJECTS", "PATENT_STRENGTH",
+                "PUB_SHARED_SUBJECTS", "PUB_STRENGTH",
+                "TOTAL_SHARED_SUBJECTS", "TOTAL_STRENGTH", "IS_NEW_OPPORTUNITY"
+            ]].copy()
+            summary_df.columns = [
+                "Organisation", "Category",
+                "Patent Subjects", "Patent Strength",
+                "Pub Subjects", "Pub Strength",
+                "Total Subjects", "Total Strength", "New Opportunity"
+            ]
+            summary_df.index = range(1, len(summary_df) + 1)
+            st.dataframe(summary_df, use_container_width=True)
 
             col1, col2 = st.columns([1, 5])
             with col1:
                 st.download_button(
                     label="⬇️ Download CSV",
-                    data=display_df.to_csv().encode("utf-8"),
-                    file_name="potential_partners.csv",
+                    data=summary_df.to_csv().encode("utf-8"),
+                    file_name="recommendations.csv",
                     mime="text/csv",
                 )
 
-else:
-    # --- Standard graph mode ---
-    st.markdown(
-        "Nodes represent institutions, corporations, or research subjects. "
-        "Thicker lines indicate stronger collaboration. **Hover over any node or edge** for details."
-    )
+    elif query_mode == "similar_no_collab":
+        # --- Similar interests, no prior collaboration mode ---
+        if not search_term.strip():
+            st.warning("Please specify an institution to search from. Try asking: _'Show corporations with similar interests to NUS in publications that haven't collaborated with NUS'_")
+        else:
+            st.markdown(
+                f"Showing organisations with **similar research interests** to **{search_term.title()}** "
+                f"that have **not yet directly collaborated** with it. "
+                "Ranked by number of shared subjects. Hover over nodes for details."
+            )
+            with st.spinner("Running analysis…"):
+                similar_df = run_similar_no_collab_query(
+                    institution=search_term.strip(),
+                    ip_type=selected_ip_type if selected_ip_type != "All" else None,
+                    category=selected_category if selected_category != "All" else None,
+                    top_n=top_n_results,
+                    subject_filter=subject_filter,
+                )
 
-    where_clauses = [f"WEIGHT >= {min_weight}"]
+            if similar_df.empty:
+                st.info("No matches found. Try broadening the filters — e.g. remove the category filter or change the output type.")
+            else:
+                org_ids = similar_df["ORG_ID"].tolist()
+                with st.spinner("Loading subject connections…"):
+                    edges_df = run_similar_no_collab_subject_edges(
+                        institution=search_term.strip(),
+                        org_ids=org_ids,
+                        ip_type=selected_ip_type if selected_ip_type != "All" else None,
+                        subject_filter=subject_filter,
+                    )
 
-    if selected_ip_type != "All":
-        where_clauses.append(f"IP_TYPE = '{sql_escape(selected_ip_type)}'")
+                html = build_similar_no_collab_graph(similar_df, edges_df)
+                html = inject_png_download(html, filename="potential_partners.png")
+                components.html(html, height=780, scrolling=True)
+                st.caption(
+                    f"🔵 Blue nodes = potential partners ({len(similar_df)})  "
+                    f"🟠 Orange nodes = shared research subjects.  "
+                    "Hover over any node or edge for details."
+                )
 
-    if selected_edge_type != "All":
-        where_clauses.append(f"EDGE_TYPE = '{sql_escape(selected_edge_type)}'")
+                st.subheader("📋 Ranked results")
+                display_df = similar_df[["ORG_NAME", "ORG_CATEGORY", "SHARED_SUBJECTS", "TOTAL_WEIGHT"]].copy()
+                display_df.columns = ["Organisation", "Category", "Shared Subjects", "Collaboration Strength"]
+                display_df.index = range(1, len(display_df) + 1)
+                st.dataframe(display_df, use_container_width=True)
 
-    if selected_category != "All":
-        safe_cat = sql_escape(selected_category)
-        where_clauses.append(f"(SOURCE_CATEGORY = '{safe_cat}' OR TARGET_CATEGORY = '{safe_cat}')")
+                col1, col2 = st.columns([1, 5])
+                with col1:
+                    st.download_button(
+                        label="⬇️ Download CSV",
+                        data=display_df.to_csv().encode("utf-8"),
+                        file_name="potential_partners.csv",
+                        mime="text/csv",
+                    )
 
-    if search_term.strip():
-        safe_search = sql_escape(search_term.strip())
-        where_clauses.append(f"(SOURCE_NAME ILIKE '%{safe_search}%' OR TARGET_NAME ILIKE '%{safe_search}%')")
+    else:
+        # --- Standard graph mode ---
+        st.markdown(
+            "Nodes represent institutions, corporations, or research subjects. "
+            "Thicker lines indicate stronger collaboration. **Hover over any node or edge** for details."
+        )
 
-    where_sql = " AND ".join(where_clauses)
+        where_clauses = [f"WEIGHT >= {min_weight}"]
 
-    sql = f"""
+        if selected_ip_type != "All":
+            where_clauses.append(f"IP_TYPE = '{sql_escape(selected_ip_type)}'")
+
+        if selected_edge_type != "All":
+            where_clauses.append(f"EDGE_TYPE = '{sql_escape(selected_edge_type)}'")
+
+        if selected_category != "All":
+            safe_cat = sql_escape(selected_category)
+            where_clauses.append(f"(SOURCE_CATEGORY = '{safe_cat}' OR TARGET_CATEGORY = '{safe_cat}')")
+
+        if search_term.strip():
+            safe_search = sql_escape(search_term.strip())
+            where_clauses.append(f"(SOURCE_NAME ILIKE '%{safe_search}%' OR TARGET_NAME ILIKE '%{safe_search}%')")
+
+        where_sql = " AND ".join(where_clauses)
+
+        sql = f"""
 SELECT
     SOURCE,
     SOURCE_NAME,
@@ -1483,83 +1485,82 @@ ORDER BY WEIGHT DESC
 LIMIT {max_edges}
 """
 
-    df = run_query(sql)
+        df = run_query(sql)
 
-    if top_n_nodes and search_term.strip():
-        df = keep_top_n_neighbours(df, search_term.strip(), top_n_nodes)
-    elif not search_term.strip():
-        df = keep_top_communities(df, top_n=10)
+        if top_n_nodes and search_term.strip():
+            df = keep_top_n_neighbours(df, search_term.strip(), top_n_nodes)
+        elif not search_term.strip():
+            df = keep_top_communities(df, top_n=10)
 
-    if df.empty:
-        st.info(
-            "No connections found for the selected filters. "
-            "Try asking the AI assistant below."
-        )
-    else:
-        # --- Node highlight search ---
-        highlight_term = st.text_input(
-            "🔍 Highlight a node",
-            placeholder="Type a node name to highlight it in the graph…",
-            key="highlight_input",
-        )
-
-        html = build_pyvis_graph(df, highlight_term=highlight_term.strip() if highlight_term else None)
-        html = inject_png_download(html, filename="collaboration_network.png")
-        components.html(html, height=780, scrolling=True)
-
-        n_nodes = pd.concat([df["SOURCE"], df["TARGET"]]).nunique()
-        n_edges = len(df)
-        st.caption(
-            f"Showing {n_nodes:,} institutions across {n_edges:,} connections. "
-            "Drag nodes to rearrange, scroll to zoom."
-        )
-
-    with st.expander("📊 View connection data"):
-        st.dataframe(df, use_container_width=True)
-        col1, col2 = st.columns([1, 5])
-        with col1:
-            st.download_button(
-                label="⬇️ Download CSV",
-                data=df.to_csv(index=False).encode("utf-8"),
-                file_name="collaboration_network.csv",
-                mime="text/csv",
+        if df.empty:
+            st.info(
+                "No connections found for the selected filters. "
+                "Try asking the AI assistant."
+            )
+        else:
+            highlight_term = st.text_input(
+                "🔍 Highlight a node",
+                placeholder="Type a node name to highlight it in the graph…",
+                key="highlight_input",
             )
 
-    with st.expander("🔍 View SQL query"):
-        st.code(sql, language="sql")
+            html = build_pyvis_graph(df, highlight_term=highlight_term.strip() if highlight_term else None)
+            html = inject_png_download(html, filename="collaboration_network.png")
+            components.html(html, height=780, scrolling=True)
 
-st.divider()
+            n_nodes = pd.concat([df["SOURCE"], df["TARGET"]]).nunique()
+            n_edges = len(df)
+            st.caption(
+                f"Showing {n_nodes:,} institutions across {n_edges:,} connections. "
+                "Drag nodes to rearrange, scroll to zoom."
+            )
 
-# ---- LLM Chat ----
-st.subheader("💬 AI Research Assistant")
-st.caption(
-    "Ask in plain language to explore the network. Try: "
-    "_'Who are the top 10 institutions collaborating with NUS on publications?'_ or "
-    "_'Show corporations with similar interests to NUS that haven\\'t collaborated with NUS before'_"
-)
+        with st.expander("📊 View connection data"):
+            st.dataframe(df, use_container_width=True)
+            col1, col2 = st.columns([1, 5])
+            with col1:
+                st.download_button(
+                    label="⬇️ Download CSV",
+                    data=df.to_csv(index=False).encode("utf-8"),
+                    file_name="collaboration_network.csv",
+                    mime="text/csv",
+                )
 
-# Display chat history
-for msg in st.session_state.chat_display:
-    if msg["role"] == "user":
-        st.chat_message("user").write(msg["content"])
-    else:
-        with st.chat_message("assistant"):
-            st.write(msg["content"])
-            if msg.get("filters"):
-                with st.expander("Applied filters", expanded=False):
-                    st.json(msg["filters"])
+        with st.expander("🔍 View SQL query"):
+            st.code(sql, language="sql")
 
-# Chat input using st.form — Enter submits, clears after send, renders inline
-with st.form(key="chat_form", clear_on_submit=True):
-    col1, col2 = st.columns([5, 1])
-    with col1:
-        user_input = st.text_input(
-            "Your question",
-            placeholder="e.g. Show me top 10 corporations collaborating with NUS on publications",
-            label_visibility="collapsed",
-        )
-    with col2:
-        submitted = st.form_submit_button("Send ➤", use_container_width=True)
+with chat_col:
+    st.subheader("💬 AI Research Assistant")
+    st.caption(
+        "Ask in plain language to explore the network. Try: "
+        "_'Who are the top 10 institutions collaborating with NUS on publications?'_ or "
+        "_'Show corporations with similar interests to NUS that haven\\'t collaborated with NUS before'_"
+    )
+
+    # Display chat history
+    chat_container = st.container(height=620)
+    with chat_container:
+        for msg in st.session_state.chat_display:
+            if msg["role"] == "user":
+                st.chat_message("user").write(msg["content"])
+            else:
+                with st.chat_message("assistant"):
+                    st.write(msg["content"])
+                    if msg.get("filters"):
+                        with st.expander("Applied filters", expanded=False):
+                            st.json(msg["filters"])
+
+    # Chat input using st.form — Enter submits, clears after send, renders inline
+    with st.form(key="chat_form", clear_on_submit=True):
+        col1, col2 = st.columns([5, 1])
+        with col1:
+            user_input = st.text_input(
+                "Your question",
+                placeholder="e.g. Recommend industry partners for NUS in AI",
+                label_visibility="collapsed",
+            )
+        with col2:
+            submitted = st.form_submit_button("Send ➤", use_container_width=True)
 
 if submitted and user_input.strip():
     st.session_state.chat_display.append({"role": "user", "content": user_input})
