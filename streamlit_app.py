@@ -1006,8 +1006,15 @@ Return a JSON object with the following fields:
   "max_edges": <integer or null>,       // max edges to load (20–1000), or null to keep current.
                                         // For "top N" requests: set max_edges=300 and top_n_nodes=N instead.
   "top_n_nodes": <integer or null>,     // for "top N partners" in standard mode, set to N. Leave null otherwise.
-  "top_n_results": <integer or null>,   // for "similar_no_collab" mode only: how many results to return. Default null (will use 20).
-  "subject_filter": "<string or null>", // for "similar_no_collab" mode: scope the search to a specific subject area.
+  "top_n_results": <integer or null>,   // for "similar_no_collab" and "recommendation" mode: how many results to return.
+                                        // Default is 3 for recommendations, 20 for similar_no_collab if not specified.
+  "subject_filter": "<string or null>", // scope the search to a specific QS subject area.
+                                        // MUST exactly match one of: [AVAILABLE_SUBJECTS]
+                                        // Map natural language to the correct QS subject name e.g.:
+                                        //   "AI", "artificial intelligence", "machine learning" → "COMPUTER SCIENCE & INFORMATION SYSTEMS" or "DATA SCIENCE"
+                                        //   "biomedical", "life sciences" → "BIOLOGICAL SCIENCES" or "MEDICINE"
+                                        //   "engineering" → pick the most specific match e.g. "ENGINEERING - ELECTRICAL & ELECTRONIC"
+                                        //   If ambiguous, pick the closest match or leave null for all subjects.
   "explanation": "<friendly 1-2 sentence explanation of what the results will show, or null for general_answer>"
 }
 
@@ -1019,6 +1026,7 @@ Rules:
 - ip_type must exactly match one of: [AVAILABLE_IP_TYPES]
 - edge_type must exactly match one of: [AVAILABLE_EDGE_TYPES]
 - category must exactly match one of: [AVAILABLE_CATEGORIES]
+- subject_filter must exactly match one of: [AVAILABLE_SUBJECTS] — never invent a subject name
 - If the user mentions "NUS" or "National University of Singapore", set search_term to "NATIONAL UNIVERSITY OF SINGAPORE".
 - If the user says "reset", "clear", "start over", or "show everything", set response_type="graph_query", query_mode="standard", ip_type=null, edge_type=null, search_term=null, min_weight=1, max_edges=200, category=null, top_n_nodes=null, top_n_results=null.
 - For "similar_no_collab" mode, search_term is required.
@@ -1031,6 +1039,7 @@ def extract_filters_from_llm(
     available_ip_types: list,
     available_edge_types: list,
     available_categories: list,
+    available_subjects: list,
 ) -> dict: 
 
     system = SYSTEM_PROMPT.replace(
@@ -1039,6 +1048,8 @@ def extract_filters_from_llm(
         "[AVAILABLE_EDGE_TYPES]", ", ".join(available_edge_types)
     ).replace(
         "[AVAILABLE_CATEGORIES]", ", ".join(available_categories)
+    ).replace(
+        "[AVAILABLE_SUBJECTS]", ", ".join(available_subjects)
     )
 
     messages = []
@@ -1129,6 +1140,15 @@ categories_df = run_query("""
 edge_types_raw = edge_types_df["EDGE_TYPE"].tolist()
 ip_types_raw = ip_types_df["IP_TYPE"].tolist()
 categories_raw = categories_df["CATEGORY"].tolist()
+
+subjects_df = run_query("""
+    SELECT DISTINCT NODE_NAME AS SUBJECT_NAME
+    FROM GRAPH_NETWORK.GRAPH.ALL_NODES
+    WHERE NODE_TYPE = 'Subject'
+    AND NODE_NAME != 'NO SUBJECT DETECTED'
+    ORDER BY SUBJECT_NAME
+""")
+subjects_raw = subjects_df["SUBJECT_NAME"].tolist()
 
 edge_types = ["All"] + edge_types_raw
 ip_types = ["All"] + ip_types_raw
@@ -1244,13 +1264,13 @@ has_queried = fs.get("has_queried", False)
 st.subheader("🗺️ Collaboration Network")
 st.markdown(
     "<span style='font-size:13px'>"
-    "🟠 NUS-affiliated &nbsp;|&nbsp; "
-    "🔴 New opportunity &nbsp;|&nbsp; "
-    "🔵 Patent applicant / existing partner &nbsp;|&nbsp; "
-    "🩵 Publication institute &nbsp;|&nbsp; "
-    "🟡 Patent subject &nbsp;|&nbsp; "
-    "🟤 Publication subject &nbsp;|&nbsp; "
-    "⚪ Other"
+    "<span style='color:#ff9933'>■</span> NUS-affiliated &nbsp;|&nbsp; "
+    "<span style='color:#ff6b6b'>■</span> New opportunity &nbsp;|&nbsp; "
+    "<span style='color:#9DC3E6'>■</span> Patent applicant / existing partner &nbsp;|&nbsp; "
+    "<span style='color:#33cccc'>■</span> Publication institute &nbsp;|&nbsp; "
+    "<span style='color:#FFD700'>■</span> Patent subject &nbsp;|&nbsp; "
+    "<span style='color:#F4B183'>■</span> Publication subject &nbsp;|&nbsp; "
+    "<span style='color:#D9D9D9'>■</span> Other"
     "</span>",
     unsafe_allow_html=True,
 )
@@ -1282,7 +1302,15 @@ elif query_mode == "recommendation":
         tab1, tab2 = st.tabs(["📚 Shared Research Subjects", "🌐 Partner Industry Network"])
 
         with tab1:
-            st.caption("🔴 New opportunity  🔵 Existing partner  🟡 Patent subjects  🟠 Publication subjects")
+            st.markdown(
+                "<span style='font-size:12px'>"
+                "<span style='color:#ff6b6b'>■</span> New opportunity &nbsp;|&nbsp; "
+                "<span style='color:#9DC3E6'>■</span> Existing partner &nbsp;|&nbsp; "
+                "<span style='color:#FFD700'>■</span> Patent subjects &nbsp;|&nbsp; "
+                "<span style='color:#F4B183'>■</span> Publication subjects"
+                "</span>",
+                unsafe_allow_html=True,
+            )
             with st.spinner("Loading shared subjects graph…"):
                 subj_edges_df = run_recommendation_subject_edges(institution, org_ids, subject_filter)
             if subj_edges_df.empty:
@@ -1291,9 +1319,25 @@ elif query_mode == "recommendation":
                 html1 = build_recommendation_shared_subjects_graph(recs_df, subj_edges_df, institution)
                 html1 = inject_png_download(html1, "shared_subjects.png")
                 components.html(html1, height=620, scrolling=True)
+                col1, col2 = st.columns([1, 5])
+                with col1:
+                    st.download_button(
+                        label="⬇️ Download CSV",
+                        data=subj_edges_df[["ORG_NAME", "SUBJECT_NAME", "IP_TYPE", "WEIGHT"]].to_csv(index=False).encode("utf-8"),
+                        file_name="shared_subjects.csv",
+                        mime="text/csv",
+                        key="dl_shared_subjects",
+                    )
 
         with tab2:
-            st.caption("🔴 New opportunity  🔵 Existing partner  🟢 Their existing collaborators")
+            st.markdown(
+                "<span style='font-size:12px'>"
+                "<span style='color:#ff6b6b'>■</span> New opportunity &nbsp;|&nbsp; "
+                "<span style='color:#9DC3E6'>■</span> Existing partner &nbsp;|&nbsp; "
+                "<span style='color:#33cccc'>■</span> Their existing collaborators"
+                "</span>",
+                unsafe_allow_html=True,
+            )
             with st.spinner("Loading industry network graph…"):
                 collab_df = run_org_collaborators_query(org_ids)
             if collab_df.empty:
@@ -1302,6 +1346,15 @@ elif query_mode == "recommendation":
                 html2 = build_recommendation_network_graph(recs_df, collab_df)
                 html2 = inject_png_download(html2, "industry_network.png")
                 components.html(html2, height=620, scrolling=True)
+                col1, col2 = st.columns([1, 5])
+                with col1:
+                    st.download_button(
+                        label="⬇️ Download CSV",
+                        data=collab_df[["SOURCE_NAME", "SOURCE_CATEGORY", "TARGET_NAME", "TARGET_CATEGORY", "EDGE_TYPE", "IP_TYPE", "WEIGHT"]].to_csv(index=False).encode("utf-8"),
+                        file_name="industry_network.csv",
+                        mime="text/csv",
+                        key="dl_industry_network",
+                    )
 
         st.subheader("📋 Summary table")
         summary_df = recs_df[[
@@ -1519,6 +1572,7 @@ if submitted and user_input.strip():
                 available_ip_types=ip_types_raw,
                 available_edge_types=edge_types_raw,
                 available_categories=categories_raw,
+                available_subjects=subjects_raw,
             )
 
             response_type = parsed.get("response_type", "graph_query")
@@ -1538,14 +1592,16 @@ if submitted and user_input.strip():
                 # --- Recommendation mode — fetch data, generate written recs ---
                 search_term_val = parsed.get("search_term", "NATIONAL UNIVERSITY OF SINGAPORE") or "NATIONAL UNIVERSITY OF SINGAPORE"
                 subject_val = parsed.get("subject_filter")
-                category_val = parsed.get("category", "Corporation") or "Corporation"
+                # Only use category if explicitly specified by user, otherwise show all
+                category_val = parsed.get("category") or None
+                top_n_val = int(parsed.get("top_n_results") or 3)
 
                 with st.spinner("Fetching partner data from Snowflake…"):
                     recs_df = run_recommendation_query(
                         institution=search_term_val,
                         subject_filter=subject_val,
                         category=category_val,
-                        top_n=3,
+                        top_n=top_n_val,
                     )
 
                 if recs_df.empty:
