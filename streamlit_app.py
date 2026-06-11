@@ -644,7 +644,6 @@ def build_recommendation_shared_subjects_graph(
 
         net.add_edge(org_id, subj_key, value=weight, title=f"Strength: {weight:.0f}\n{ip_type}")
 
-    net.show_buttons(filter_=["physics"])
     return net.generate_html(notebook=False)
 
 
@@ -713,7 +712,6 @@ def build_recommendation_network_graph(
 
         net.add_edge(src, tgt, value=weight, title=f"Strength: {weight:.0f}\n{ip_type}")
 
-    net.show_buttons(filter_=["physics"])
     return net.generate_html(notebook=False)
 
 
@@ -848,8 +846,31 @@ def build_similar_no_collab_graph(results_df: pd.DataFrame, edges_df: pd.DataFra
             title=f"Strength: {weight:.0f}",
         )
 
-    net.show_buttons(filter_=["physics"])
     return net.generate_html(notebook=False)
+
+
+def inject_layout_controls(html: str) -> str:
+    """Replace physics panel with clean preset buttons that don't interfere with scrolling."""
+    controls = """
+    <div style="padding:8px 12px; display:flex; gap:8px; flex-wrap:wrap; background:#1a1a1a; border-bottom:1px solid #333;">
+        <button onclick="setForceAtlas()" style="background:#333;color:#fff;border:1px solid #555;padding:5px 14px;border-radius:4px;cursor:pointer;font-size:12px;">🔄 ForceAtlas2</button>
+        <button onclick="setBarnesHut()" style="background:#333;color:#fff;border:1px solid #555;padding:5px 14px;border-radius:4px;cursor:pointer;font-size:12px;">🌐 Barnes-Hut</button>
+        <button onclick="freezeGraph()" style="background:#333;color:#fff;border:1px solid #555;padding:5px 14px;border-radius:4px;cursor:pointer;font-size:12px;">❄️ Freeze</button>
+        <button onclick="network.fit()" style="background:#333;color:#fff;border:1px solid #555;padding:5px 14px;border-radius:4px;cursor:pointer;font-size:12px;">⊡ Fit to Screen</button>
+    </div>
+    <script>
+    function setForceAtlas() {
+        network.setOptions({physics:{enabled:true,solver:'forceAtlas2Based',forceAtlas2Based:{gravity:-50,centralGravity:0.01,springLength:100,springConstant:0.08,damping:0.4,overlap:0}}});
+    }
+    function setBarnesHut() {
+        network.setOptions({physics:{enabled:true,solver:'barnesHut',barnesHut:{gravitationalConstant:-30000,centralGravity:0.3,springLength:180,springConstant:0.02,damping:0.8,avoidOverlap:0.5}}});
+    }
+    function freezeGraph() {
+        network.setOptions({physics:{enabled:false}});
+    }
+    </script>
+    """
+    return html.replace("<div id=\"mynetwork\"", controls + "<div id=\"mynetwork\"")
 
 
 def inject_png_download(html: str, filename: str = "graph.png") -> str:
@@ -963,7 +984,6 @@ def build_pyvis_graph(df: pd.DataFrame, highlight_term: str = None) -> str:
             title=f"Connection type: {edge_type}\nStrength: {weight}",
         )
 
-    net.show_buttons(filter_=["physics"])
     html = net.generate_html(notebook=False)
     return html
 
@@ -1324,7 +1344,7 @@ with graph_col:
                     st.info("No subject edges found.")
                 else:
                     html1 = build_recommendation_shared_subjects_graph(recs_df, subj_edges_df, institution)
-                    html1 = inject_png_download(html1, "shared_subjects.png")
+                    html1 = inject_layout_controls(inject_png_download(html1, "shared_subjects.png"))
                     components.html(html1, height=620, scrolling=True)
                     col1, col2 = st.columns([1, 5])
                     with col1:
@@ -1351,7 +1371,7 @@ with graph_col:
                     st.info("No collaborator data found.")
                 else:
                     html2 = build_recommendation_network_graph(recs_df, collab_df)
-                    html2 = inject_png_download(html2, "industry_network.png")
+                    html2 = inject_layout_controls(inject_png_download(html2, "industry_network.png"))
                     components.html(html2, height=620, scrolling=True)
                     col1, col2 = st.columns([1, 5])
                     with col1:
@@ -1372,9 +1392,9 @@ with graph_col:
             ]].copy()
             summary_df.columns = [
                 "Organisation", "Category",
-                "Patent Subjects", "Patent Strength",
-                "Pub Subjects", "Pub Strength",
-                "Total Subjects", "Total Strength", "New Opportunity"
+                "Patent Shared Subjects", "Patent Count",
+                "Publication Shared Subjects", "Publication Count",
+                "Total Shared Subjects", "Total Count", "New Opportunity"
             ]
             summary_df.index = range(1, len(summary_df) + 1)
             st.dataframe(summary_df, use_container_width=True)
@@ -1420,7 +1440,7 @@ with graph_col:
                     )
 
                 html = build_similar_no_collab_graph(similar_df, edges_df)
-                html = inject_png_download(html, filename="potential_partners.png")
+                html = inject_layout_controls(inject_png_download(html, filename="potential_partners.png"))
                 components.html(html, height=780, scrolling=True)
                 st.caption(
                     f"🔵 Blue nodes = potential partners ({len(similar_df)})  "
@@ -1509,7 +1529,7 @@ LIMIT {max_edges}
             )
 
             html = build_pyvis_graph(df, highlight_term=highlight_term.strip() if highlight_term else None)
-            html = inject_png_download(html, filename="collaboration_network.png")
+            html = inject_layout_controls(inject_png_download(html, filename="collaboration_network.png"))
             components.html(html, height=780, scrolling=True)
 
             n_nodes = pd.concat([df["SOURCE"], df["TARGET"]]).nunique()
