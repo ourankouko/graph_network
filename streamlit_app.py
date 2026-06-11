@@ -14,8 +14,8 @@ import networkx as nx
 # -----------------------------
 st.set_page_config(page_title="Research Collaboration Explorer", layout="wide", initial_sidebar_state="collapsed")
 
-st.title("Graph Network Explorer")
-st.write("Explore patent and publication graph networks from Snowflake.")
+st.title("🔬 Research Collaboration Explorer")
+st.write("Discover institutions and corporations with shared research interests for potential collaboration.")
 
 
 # -----------------------------
@@ -1261,16 +1261,20 @@ has_queried = fs.get("has_queried", False)
 # -----------------------------
 # Two column layout
 # -----------------------------
-graph_col, chat_col = st.columns([3, 2], gap="large")
+# -----------------------------
+# Two column layout
+# -----------------------------
+chat_col, graph_col = st.columns([2, 3], gap="large")
 
 with graph_col:
     st.subheader("🗺️ Collaboration Network")
     st.markdown(
-        "<span style='font-size:16px'>"
+        "<span style='font-size:14px'>"
         "<span style='color:#ff9933'>■</span> NUS-affiliated &nbsp;|&nbsp; "
         "<span style='color:#ff6b6b'>■</span> New opportunity &nbsp;|&nbsp; "
         "<span style='color:#9DC3E6'>■</span> Patent applicant / existing partner &nbsp;|&nbsp; "
-        "<span style='color:#33cccc'>■</span> Publication institute &nbsp;|&nbsp; "
+        "<span style='color:#33cccc'>■</span> Publication institute"
+        "<br>"
         "<span style='color:#FFD700'>■</span> Patent subject &nbsp;|&nbsp; "
         "<span style='color:#F4B183'>■</span> Publication subject &nbsp;|&nbsp; "
         "<span style='color:#D9D9D9'>■</span> Other"
@@ -1533,12 +1537,11 @@ with chat_col:
     st.subheader("💬 AI Research Assistant")
     st.caption(
         "Ask in plain language to explore the network. Try: "
-        "_'Who are the top 10 institutions collaborating with NUS on publications?'_ or "
-        "_'Show corporations with similar interests to NUS that haven\\'t collaborated with NUS before'_"
+        "_'Recommend industry partners for NUS in computer science'_ or "
+        "_'Show NUS patent partners in engineering'_"
     )
 
-    # Display chat history
-    chat_container = st.container(height=620)
+    chat_container = st.container(height=580)
     with chat_container:
         for msg in st.session_state.chat_display:
             if msg["role"] == "user":
