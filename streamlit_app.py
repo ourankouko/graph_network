@@ -1285,8 +1285,8 @@ with graph_col:
     if not has_queried:
         st.info(
             "👋 **Welcome to the Research Collaboration Explorer!**\n\n"
-            "Use the AI assistant below to get started. Here are some things you can ask:\n\n"
-            "- _'Show me the top 10 corporations collaborating with NUS on publications'_\n"
+            "Use the AI assistant on the left to get started. Here are some things you can ask:\n\n"
+            "- _'Recommend industry partners for NUS in computer science'_\n"
             "- _'Show NUS patent partners in engineering'_\n"
             "- _'Show corporations with similar research interests to NUS that haven\\'t collaborated before'_\n\n"
             "Or use the manual filters in the sidebar."
@@ -1541,7 +1541,7 @@ with chat_col:
         "_'Show NUS patent partners in engineering'_"
     )
 
-    chat_container = st.container(height=580)
+    chat_container = st.container(height=400)
     with chat_container:
         for msg in st.session_state.chat_display:
             if msg["role"] == "user":
