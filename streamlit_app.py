@@ -56,10 +56,10 @@ def get_node_color(node_type: str, node_name: str, nus_affiliated) -> str:
     node_name = str(node_name).upper()
 
     if str(nus_affiliated).upper() in ["TRUE", "1", "YES"]:
-        return "#C00000"
+        return "#ff9933"
 
     if "NATIONAL UNIVERSITY OF SINGAPORE" in node_name:
-        return "#C00000"
+        return "#ff9933"
 
     if "SUBJECT" in node_type:
         return "#F4B183"
@@ -68,7 +68,7 @@ def get_node_color(node_type: str, node_name: str, nus_affiliated) -> str:
         return "#9DC3E6"
 
     if "INSTITUTE" in node_type:
-        return "#A9D18E"
+        return "#33cccc"
 
     return "#D9D9D9"
 
@@ -262,6 +262,461 @@ LIMIT {top_n}
     return run_query(sql)
 
 
+def run_recommendation_query(
+    institution: str,
+    subject_filter: str = None,
+    category: str = "Corporation",
+    top_n: int = 3,
+) -> pd.DataFrame:
+    """
+    Find top N recommended industry partners for an institution.
+    Returns ALL orgs with shared subjects (both collaborators and non-collaborators),
+    flagged with IS_NEW_OPPORTUNITY.
+    Aggregates across both Patents and Publications.
+    """
+    safe_inst = sql_escape(institution)
+    subject_clause = (
+        f"AND (SOURCE_NAME ILIKE '%{sql_escape(subject_filter)}%' OR TARGET_NAME ILIKE '%{sql_escape(subject_filter)}%')"
+        if subject_filter else ""
+    )
+    cat_filter = (
+        f"AND (SOURCE_CATEGORY = '{sql_escape(category)}' OR TARGET_CATEGORY = '{sql_escape(category)}')"
+        if category and category != "All" else ""
+    )
+
+    sql = f"""
+WITH inst_subjects AS (
+    SELECT DISTINCT
+        CASE WHEN SOURCE_NAME ILIKE '%{safe_inst}%' THEN TARGET ELSE SOURCE END AS SUBJECT_ID,
+        CASE WHEN SOURCE_NAME ILIKE '%{safe_inst}%' THEN TARGET_NAME ELSE SOURCE_NAME END AS SUBJECT_NAME
+    FROM GRAPH_NETWORK.GRAPH.ALL_EDGES_ENRICHED
+    WHERE (SOURCE_NAME ILIKE '%{safe_inst}%' OR TARGET_NAME ILIKE '%{safe_inst}%')
+    AND EDGE_TYPE IN ('Applicant_Subject', 'Institute_Subject')
+    {subject_clause}
+),
+org_subject_edges AS (
+    SELECT
+        CASE WHEN SOURCE_TYPE IN ('Applicant', 'Institutes') THEN SOURCE ELSE TARGET END AS ORG_ID,
+        CASE WHEN SOURCE_TYPE IN ('Applicant', 'Institutes') THEN SOURCE_NAME ELSE TARGET_NAME END AS ORG_NAME,
+        CASE WHEN SOURCE_TYPE IN ('Applicant', 'Institutes') THEN SOURCE_CATEGORY ELSE TARGET_CATEGORY END AS ORG_CATEGORY,
+        CASE WHEN SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects) THEN SOURCE ELSE TARGET END AS MATCHED_SUBJECT_ID,
+        CASE WHEN SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects) THEN SOURCE_NAME ELSE TARGET_NAME END AS MATCHED_SUBJECT_NAME,
+        IP_TYPE,
+        WEIGHT
+    FROM GRAPH_NETWORK.GRAPH.ALL_EDGES_ENRICHED
+    WHERE EDGE_TYPE IN ('Applicant_Subject', 'Institute_Subject')
+    AND (SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects) OR TARGET IN (SELECT SUBJECT_ID FROM inst_subjects))
+    AND SOURCE_NAME NOT ILIKE '%{safe_inst}%'
+    AND TARGET_NAME NOT ILIKE '%{safe_inst}%'
+    {cat_filter}
+),
+org_patents AS (
+    SELECT ORG_ID, ORG_NAME, ORG_CATEGORY,
+        COUNT(DISTINCT MATCHED_SUBJECT_ID) AS PATENT_SHARED_SUBJECTS,
+        SUM(WEIGHT) AS PATENT_STRENGTH
+    FROM org_subject_edges
+    WHERE IP_TYPE = 'Patents'
+    GROUP BY ORG_ID, ORG_NAME, ORG_CATEGORY
+),
+org_pubs AS (
+    SELECT ORG_ID, ORG_NAME, ORG_CATEGORY,
+        COUNT(DISTINCT MATCHED_SUBJECT_ID) AS PUB_SHARED_SUBJECTS,
+        SUM(WEIGHT) AS PUB_STRENGTH
+    FROM org_subject_edges
+    WHERE IP_TYPE = 'Publications'
+    GROUP BY ORG_ID, ORG_NAME, ORG_CATEGORY
+),
+org_matches AS (
+    SELECT
+        COALESCE(p.ORG_ID, pub.ORG_ID) AS ORG_ID,
+        COALESCE(p.ORG_NAME, pub.ORG_NAME) AS ORG_NAME,
+        COALESCE(p.ORG_CATEGORY, pub.ORG_CATEGORY) AS ORG_CATEGORY,
+        COALESCE(p.PATENT_SHARED_SUBJECTS, 0) AS PATENT_SHARED_SUBJECTS,
+        COALESCE(p.PATENT_STRENGTH, 0) AS PATENT_STRENGTH,
+        COALESCE(pub.PUB_SHARED_SUBJECTS, 0) AS PUB_SHARED_SUBJECTS,
+        COALESCE(pub.PUB_STRENGTH, 0) AS PUB_STRENGTH,
+        COALESCE(p.PATENT_SHARED_SUBJECTS, 0) + COALESCE(pub.PUB_SHARED_SUBJECTS, 0) AS TOTAL_SHARED_SUBJECTS,
+        COALESCE(p.PATENT_STRENGTH, 0) + COALESCE(pub.PUB_STRENGTH, 0) AS TOTAL_STRENGTH
+    FROM org_patents p
+    FULL OUTER JOIN org_pubs pub ON p.ORG_ID = pub.ORG_ID
+),
+direct_collabs AS (
+    SELECT DISTINCT
+        CASE WHEN SOURCE_NAME ILIKE '%{safe_inst}%' THEN TARGET ELSE SOURCE END AS COLLAB_ID
+    FROM GRAPH_NETWORK.GRAPH.ALL_EDGES_ENRICHED
+    WHERE (SOURCE_NAME ILIKE '%{safe_inst}%' OR TARGET_NAME ILIKE '%{safe_inst}%')
+    AND EDGE_TYPE IN ('Applicant_Applicant', 'Institution_Institution')
+),
+org_subjects_list AS (
+    SELECT ORG_ID,
+        LISTAGG(DISTINCT MATCHED_SUBJECT_NAME, ' | ') WITHIN GROUP (ORDER BY MATCHED_SUBJECT_NAME) AS SHARED_SUBJECT_NAMES
+    FROM org_subject_edges
+    GROUP BY ORG_ID
+)
+SELECT
+    m.ORG_ID,
+    m.ORG_NAME,
+    m.ORG_CATEGORY,
+    m.PATENT_SHARED_SUBJECTS,
+    m.PATENT_STRENGTH,
+    m.PUB_SHARED_SUBJECTS,
+    m.PUB_STRENGTH,
+    m.TOTAL_SHARED_SUBJECTS,
+    m.TOTAL_STRENGTH,
+    CASE WHEN dc.COLLAB_ID IS NULL THEN TRUE ELSE FALSE END AS IS_NEW_OPPORTUNITY,
+    sl.SHARED_SUBJECT_NAMES
+FROM org_matches m
+LEFT JOIN direct_collabs dc ON m.ORG_ID = dc.COLLAB_ID
+LEFT JOIN org_subjects_list sl ON m.ORG_ID = sl.ORG_ID
+WHERE m.TOTAL_SHARED_SUBJECTS > 0
+ORDER BY m.TOTAL_SHARED_SUBJECTS DESC, m.TOTAL_STRENGTH DESC
+LIMIT {top_n}
+"""
+    return run_query(sql)
+
+
+def run_org_collaborators_query(org_ids: list) -> pd.DataFrame:
+    """Fetch all collaborators of the recommended orgs (both patents and publications)."""
+    if not org_ids:
+        return pd.DataFrame()
+    quoted = ", ".join(f"'{sql_escape(str(oid))}'" for oid in org_ids)
+    sql = f"""
+SELECT
+    SOURCE,
+    SOURCE_NAME,
+    SOURCE_TYPE,
+    SOURCE_CATEGORY,
+    SOURCE_NUS_AFFILIATED,
+    TARGET,
+    TARGET_NAME,
+    TARGET_TYPE,
+    TARGET_CATEGORY,
+    TARGET_NUS_AFFILIATED,
+    EDGE_TYPE,
+    IP_TYPE,
+    WEIGHT
+FROM GRAPH_NETWORK.GRAPH.ALL_EDGES_ENRICHED
+WHERE EDGE_TYPE IN ('Applicant_Applicant', 'Institution_Institution')
+AND (SOURCE IN ({quoted}) OR TARGET IN ({quoted}))
+ORDER BY WEIGHT DESC
+LIMIT 300
+"""
+    return run_query(sql)
+
+
+def run_recommendation_subject_edges(
+    institution: str,
+    org_ids: list,
+    subject_filter: str = None,
+) -> pd.DataFrame:
+    """Fetch shared subject edges between recommended orgs and the institution's subjects."""
+    if not org_ids:
+        return pd.DataFrame()
+    safe_inst = sql_escape(institution)
+    subject_clause = (
+        f"AND (SOURCE_NAME ILIKE '%{sql_escape(subject_filter)}%' OR TARGET_NAME ILIKE '%{sql_escape(subject_filter)}%')"
+        if subject_filter else ""
+    )
+    quoted = ", ".join(f"'{sql_escape(str(oid))}'" for oid in org_ids)
+    sql = f"""
+WITH inst_subjects AS (
+    SELECT DISTINCT
+        CASE WHEN SOURCE_NAME ILIKE '%{safe_inst}%' THEN TARGET ELSE SOURCE END AS SUBJECT_ID,
+        CASE WHEN SOURCE_NAME ILIKE '%{safe_inst}%' THEN TARGET_NAME ELSE SOURCE_NAME END AS SUBJECT_NAME
+    FROM GRAPH_NETWORK.GRAPH.ALL_EDGES_ENRICHED
+    WHERE (SOURCE_NAME ILIKE '%{safe_inst}%' OR TARGET_NAME ILIKE '%{safe_inst}%')
+    AND EDGE_TYPE IN ('Applicant_Subject', 'Institute_Subject')
+    {subject_clause}
+)
+SELECT
+    CASE WHEN SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects) THEN TARGET ELSE SOURCE END AS ORG_ID,
+    CASE WHEN SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects) THEN TARGET_NAME ELSE SOURCE_NAME END AS ORG_NAME,
+    CASE WHEN SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects) THEN SOURCE ELSE TARGET END AS SUBJECT_ID,
+    CASE WHEN SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects) THEN SOURCE_NAME ELSE TARGET_NAME END AS SUBJECT_NAME,
+    IP_TYPE,
+    WEIGHT
+FROM GRAPH_NETWORK.GRAPH.ALL_EDGES_ENRICHED
+WHERE EDGE_TYPE IN ('Applicant_Subject', 'Institute_Subject')
+AND (SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects) OR TARGET IN (SELECT SUBJECT_ID FROM inst_subjects))
+AND (SOURCE IN ({quoted}) OR TARGET IN ({quoted}))
+"""
+    return run_query(sql)
+
+
+def run_titles_for_orgs(
+    institution: str,
+    org_ids: list,
+    subject_filter: str = None,
+    max_titles_per_org: int = 5,
+) -> pd.DataFrame:
+    """
+    Fetch representative patent/publication titles for the shared research area
+    between the institution and each recommended org.
+    Joins ALL_EDGES_ENRICHED_FLAT to INDUSTRY_AGG.PUBLIC.PAT_PUB on UID.
+    Returns up to max_titles_per_org titles per org per IP type.
+    """
+    if not org_ids:
+        return pd.DataFrame()
+
+    safe_inst = sql_escape(institution)
+    quoted = ", ".join(f"'{sql_escape(str(oid))}'" for oid in org_ids)
+    subject_clause = (
+        f"AND (e.SOURCE_NAME ILIKE '%{sql_escape(subject_filter)}%' OR e.TARGET_NAME ILIKE '%{sql_escape(subject_filter)}%')"
+        if subject_filter else ""
+    )
+
+    sql = f"""
+WITH inst_subjects AS (
+    SELECT DISTINCT
+        CASE WHEN SOURCE_NAME ILIKE '%{safe_inst}%' THEN TARGET ELSE SOURCE END AS SUBJECT_ID
+    FROM GRAPH_NETWORK.GRAPH.ALL_EDGES_ENRICHED
+    WHERE (SOURCE_NAME ILIKE '%{safe_inst}%' OR TARGET_NAME ILIKE '%{safe_inst}%')
+    AND EDGE_TYPE IN ('Applicant_Subject', 'Institute_Subject')
+),
+org_subject_uids AS (
+    SELECT DISTINCT
+        CASE WHEN e.SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects) THEN e.TARGET ELSE e.SOURCE END AS ORG_ID,
+        CASE WHEN e.SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects) THEN e.TARGET_NAME ELSE e.SOURCE_NAME END AS ORG_NAME,
+        e.IP_TYPE,
+        f.UID
+    FROM GRAPH_NETWORK.GRAPH.ALL_EDGES_ENRICHED_FLAT f
+    JOIN GRAPH_NETWORK.GRAPH.ALL_EDGES_ENRICHED e
+        ON f.SOURCE = e.SOURCE AND f.TARGET = e.TARGET AND f.EDGE_TYPE = e.EDGE_TYPE
+    WHERE e.EDGE_TYPE IN ('Applicant_Subject', 'Institute_Subject')
+    AND (e.SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects) OR e.TARGET IN (SELECT SUBJECT_ID FROM inst_subjects))
+    AND (e.SOURCE IN ({quoted}) OR e.TARGET IN ({quoted}))
+    AND e.SOURCE_NAME NOT ILIKE '%{safe_inst}%'
+    AND e.TARGET_NAME NOT ILIKE '%{safe_inst}%'
+    {subject_clause}
+),
+ranked AS (
+    SELECT
+        o.ORG_ID,
+        o.ORG_NAME,
+        o.IP_TYPE,
+        p.TITLE,
+        ROW_NUMBER() OVER (PARTITION BY o.ORG_ID, o.IP_TYPE ORDER BY p.TITLE) AS rn
+    FROM org_subject_uids o
+    JOIN INDUSTRY_AGG.PUBLIC.PAT_PUB p ON o.UID = p.UID
+    WHERE p.TITLE IS NOT NULL AND p.TITLE != ''
+)
+SELECT ORG_ID, ORG_NAME, IP_TYPE, TITLE
+FROM ranked
+WHERE rn <= {max_titles_per_org}
+ORDER BY ORG_ID, IP_TYPE, rn
+"""
+    return run_query(sql)
+
+
+def generate_recommendations(
+    recs_df: pd.DataFrame,
+    institution: str,
+    subject_filter: str = None,
+    titles_df: pd.DataFrame = None,
+) -> str:
+    """Call Claude to generate written recommendations from the query results, enriched with actual titles."""
+    # Build titles lookup: {org_id: {"Patents": [...], "Publications": [...]}}
+    titles_by_org = {}
+    if titles_df is not None and not titles_df.empty:
+        for _, row in titles_df.iterrows():
+            oid = str(row["ORG_ID"])
+            ip = str(row["IP_TYPE"])
+            title = str(row["TITLE"]).strip().title()
+            if oid not in titles_by_org:
+                titles_by_org[oid] = {"Patents": [], "Publications": []}
+            if ip in titles_by_org[oid]:
+                titles_by_org[oid][ip].append(title)
+
+    rows = []
+    for _, row in recs_df.iterrows():
+        org_id = str(row["ORG_ID"])
+        tier = "🆕 New Opportunity" if row["IS_NEW_OPPORTUNITY"] else "🤝 Existing Partner"
+        org_titles = titles_by_org.get(org_id, {})
+
+        pat_titles = org_titles.get("Patents", [])
+        pub_titles = org_titles.get("Publications", [])
+
+        title_lines = ""
+        if pat_titles:
+            title_lines += f"  Sample patent titles: {'; '.join(pat_titles[:5])}\n"
+        if pub_titles:
+            title_lines += f"  Sample publication titles: {'; '.join(pub_titles[:5])}\n"
+
+        rows.append(
+            f"- {row['ORG_NAME']} ({row['ORG_CATEGORY']}) [{tier}]\n"
+            f"  Patents: {int(row['PATENT_SHARED_SUBJECTS'])} shared subjects, strength {int(row['PATENT_STRENGTH'])}\n"
+            f"  Publications: {int(row['PUB_SHARED_SUBJECTS'])} shared subjects, strength {int(row['PUB_STRENGTH'])}\n"
+            f"  Shared subjects: {row['SHARED_SUBJECT_NAMES']}\n"
+            f"{title_lines}"
+        )
+    data_str = "\n".join(rows)
+    subject_context = f" in {subject_filter}" if subject_filter else ""
+
+    prompt = f"""You are a research collaboration advisor at {institution}.
+
+Based on the data below, write concise recommendations for the top {len(recs_df)} industry partners for {institution}{subject_context}.
+
+For each organisation write 3-4 sentences covering:
+1. What the organisation does and their relevance to the shared research areas — use the actual patent/publication titles as evidence of their research focus
+2. Their patent and publication overlap with {institution} (use the actual numbers)
+3. Why they are a strong collaboration candidate based on both the subject overlap and the nature of their research titles
+4. Whether they are a new opportunity or existing partner and what that means strategically
+
+Use the tier labels exactly as shown (🆕 New Opportunity or 🤝 Existing Partner).
+Be specific and data-driven. Reference actual titles where relevant to justify the recommendation.
+Write in a professional but accessible tone for senior stakeholders.
+
+Data:
+{data_str}
+
+Format each recommendation as:
+**[Rank]. [Organisation Name]** [tier label]
+[Your 3-4 sentence recommendation]
+"""
+
+    response = client.messages.create(
+        model="claude-sonnet-4-5",
+        max_tokens=2000,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return response.content[0].text.strip()
+
+
+def build_recommendation_shared_subjects_graph(
+    recs_df: pd.DataFrame,
+    subject_edges_df: pd.DataFrame,
+    institution: str,
+) -> str:
+    """Graph 1: recommended orgs connected to their shared subject areas."""
+    net = Network(
+        height="600px", width="100%", bgcolor="#1a1a1a",
+        font_color="#ffffff", directed=False, notebook=False, cdn_resources="in_line",
+    )
+    net.force_atlas_2based(gravity=-50, central_gravity=0.01, spring_length=150, spring_strength=0.08, damping=0.4, overlap=0)
+
+    added_orgs = set()
+    added_subjects = set()
+
+    org_meta = {
+        str(row["ORG_ID"]): {
+            "name": str(row["ORG_NAME"]),
+            "category": str(row["ORG_CATEGORY"]),
+            "is_new": bool(row["IS_NEW_OPPORTUNITY"]),
+            "total": int(row["TOTAL_SHARED_SUBJECTS"]),
+            "strength": int(row["TOTAL_STRENGTH"]),
+        }
+        for _, row in recs_df.iterrows()
+    }
+
+    for _, row in subject_edges_df.iterrows():
+        org_id = str(row["ORG_ID"])
+        org_name = str(row["ORG_NAME"])
+        subj_id = str(row["SUBJECT_ID"])
+        subj_name = str(row["SUBJECT_NAME"])
+        weight = float(row["WEIGHT"])
+        ip_type = str(row["IP_TYPE"])
+
+        meta = org_meta.get(org_id, {})
+
+        if org_id not in added_orgs:
+            color = "#ff6b6b" if meta.get("is_new") else "#9DC3E6"
+            tier = "🆕 New Opportunity" if meta.get("is_new") else "🤝 Existing Partner"
+            net.add_node(
+                org_id,
+                label=org_name,
+                title=f"{org_name}\n{tier}\nCategory: {meta.get('category','')}\nShared subjects: {meta.get('total',0)}\nTotal strength: {meta.get('strength',0)}",
+                color=color,
+                value=meta.get("total", 1) * 3,
+            )
+            added_orgs.add(org_id)
+
+        subj_key = f"{subj_id}_{ip_type}"
+        if subj_key not in added_subjects:
+            subj_color = "#FFD700" if ip_type == "Patents" else "#F4B183"
+            net.add_node(
+                subj_key,
+                label=f"{subj_name}\n({ip_type})",
+                title=f"Subject: {subj_name}\nType: {ip_type}",
+                color=subj_color,
+                value=2,
+            )
+            added_subjects.add(subj_key)
+
+        net.add_edge(org_id, subj_key, value=weight, title=f"Strength: {weight:.0f}\n{ip_type}")
+
+    net.show_buttons(filter_=["physics"])
+    return net.generate_html(notebook=False)
+
+
+def build_recommendation_network_graph(
+    recs_df: pd.DataFrame,
+    collaborators_df: pd.DataFrame,
+) -> str:
+    """Graph 2: recommended orgs and their existing collaborator network."""
+    net = Network(
+        height="600px", width="100%", bgcolor="#1a1a1a",
+        font_color="#ffffff", directed=False, notebook=False, cdn_resources="in_line",
+    )
+    net.force_atlas_2based(gravity=-50, central_gravity=0.01, spring_length=150, spring_strength=0.08, damping=0.4, overlap=0)
+
+    org_meta = {
+        str(row["ORG_ID"]): {
+            "name": str(row["ORG_NAME"]),
+            "is_new": bool(row["IS_NEW_OPPORTUNITY"]),
+        }
+        for _, row in recs_df.iterrows()
+    }
+    rec_ids = set(org_meta.keys())
+    added_nodes = set()
+
+    # Add recommended org nodes first
+    for org_id, meta in org_meta.items():
+        color = "#ff6b6b" if meta["is_new"] else "#9DC3E6"
+        tier = "🆕 New Opportunity" if meta["is_new"] else "🤝 Existing Partner"
+        net.add_node(
+            org_id,
+            label=meta["name"],
+            title=f"{meta['name']}\n{tier}",
+            color=color,
+            value=15,
+        )
+        added_nodes.add(org_id)
+
+    # Add collaborator edges
+    for _, row in collaborators_df.iterrows():
+        src = str(row["SOURCE"])
+        tgt = str(row["TARGET"])
+        src_name = str(row["SOURCE_NAME"])
+        tgt_name = str(row["TARGET_NAME"])
+        src_cat = str(row["SOURCE_CATEGORY"])
+        tgt_cat = str(row["TARGET_CATEGORY"])
+        weight = float(row["WEIGHT"])
+        ip_type = str(row["IP_TYPE"])
+
+        if src not in added_nodes:
+            net.add_node(
+                src, label=src_name,
+                title=f"{src_name}\nCategory: {src_cat}",
+                color="#33cccc" if src not in rec_ids else "#ff6b6b",
+                value=5,
+            )
+            added_nodes.add(src)
+
+        if tgt not in added_nodes:
+            net.add_node(
+                tgt, label=tgt_name,
+                title=f"{tgt_name}\nCategory: {tgt_cat}",
+                color="#33cccc" if tgt not in rec_ids else "#9DC3E6",
+                value=5,
+            )
+            added_nodes.add(tgt)
+
+        net.add_edge(src, tgt, value=weight, title=f"Strength: {weight:.0f}\n{ip_type}")
+
+    net.show_buttons(filter_=["physics"])
+    return net.generate_html(notebook=False)
+
+
 def run_similar_no_collab_subject_edges(
     institution: str,
     org_ids: list,
@@ -327,8 +782,8 @@ def build_similar_no_collab_graph(results_df: pd.DataFrame, edges_df: pd.DataFra
     net = Network(
         height="750px",
         width="100%",
-        bgcolor="#ffffff",
-        font_color="#222222",
+        bgcolor="#1a1a1a",
+        font_color="#ffffff",
         directed=False,
         notebook=False,
         cdn_resources="in_line",
@@ -426,8 +881,8 @@ def build_pyvis_graph(df: pd.DataFrame, highlight_term: str = None) -> str:
     net = Network(
         height="750px",
         width="100%",
-        bgcolor="#ffffff",
-        font_color="#222222",
+        bgcolor="#1a1a1a",
+        font_color="#ffffff",
         directed=False,
         notebook=False,
         cdn_resources="in_line",
@@ -518,13 +973,27 @@ def build_pyvis_graph(df: pd.DataFrame, highlight_term: str = None) -> str:
 # -----------------------------
 SYSTEM_PROMPT = """You are a research collaboration discovery assistant helping users explore a graph network of patents and academic publications.
 
-Based on the user's natural language request, extract their intent and return a JSON object with the following fields:
+Based on the user's natural language request, first decide if they are:
+A) Asking to filter/explore the graph network
+B) Asking a general question (about a company, institution, research topic, or concept)
+
+Return a JSON object with the following fields:
 
 {
-  "query_mode": "<string>",             // REQUIRED. One of:
+  "response_type": "<string>",          // REQUIRED. One of:
+                                        // "graph_query"    — user wants to filter or explore the graph
+                                        // "general_answer" — user wants information about a company, institution, topic, or concept
+                                        // "recommendation" — user wants recommended partners/collaborators for an institution
+                                        //   Use this when user says things like: "recommend", "who should NUS partner with",
+                                        //   "find industry partners", "suggest collaborators", "best partners for",
+                                        //   "highly likely to be partners", "who to approach"
+  "answer": "<string or null>",         // ONLY for general_answer: a helpful, concise answer (2-4 paragraphs).
+                                        // Include: what the org does, their main research/business areas,
+                                        // why they might be a good collaboration partner, and any notable facts.
+                                        // For graph_query, set this to null.
+  "query_mode": "<string>",             // for graph_query only. One of:
                                         // "standard"          — normal graph filter mode (default)
                                         // "similar_no_collab" — find orgs with similar research interests that have NOT yet collaborated with the searched institution.
-                                        //   Use this when user says things like: "similar interests but no collaboration", "hasn't worked with", "potential new partners", "never collaborated", "who to reach out to", "didn't collaborate"
   "ip_type": "<string or null>",        // "Patents" or "Publications", or null for both. Available: [AVAILABLE_IP_TYPES]
   "edge_type": "<string or null>",      // type of connection, or null for all. Available: [AVAILABLE_EDGE_TYPES]
                                         // Applicant_Applicant = patent co-applicants
@@ -538,18 +1007,20 @@ Based on the user's natural language request, extract their intent and return a 
                                         // For "top N" requests: set max_edges=300 and top_n_nodes=N instead.
   "top_n_nodes": <integer or null>,     // for "top N partners" in standard mode, set to N. Leave null otherwise.
   "top_n_results": <integer or null>,   // for "similar_no_collab" mode only: how many results to return. Default null (will use 20).
-  "subject_filter": "<string or null>", // for "similar_no_collab" mode: scope the search to a specific subject area mentioned by the user (e.g. "COMPUTER SCIENCE & INFORMATION SYSTEMS"). Use the exact subject name if mentioned, or null for all subjects.
-  "explanation": "<friendly 1-2 sentence explanation of what the results will show>"
+  "subject_filter": "<string or null>", // for "similar_no_collab" mode: scope the search to a specific subject area.
+  "explanation": "<friendly 1-2 sentence explanation of what the results will show, or null for general_answer>"
 }
 
 Rules:
-- query_mode is ALWAYS required. Default to "standard" unless the user clearly wants "similar_no_collab".
-- Only set other fields the user explicitly implies. Leave others null (do not change).
+- response_type is ALWAYS required.
+- For "general_answer": fill "answer" with a helpful response, set all filter fields to null.
+- For "graph_query": fill filter fields as needed, set "answer" to null.
+- query_mode defaults to "standard" for graph_query unless user clearly wants "similar_no_collab".
 - ip_type must exactly match one of: [AVAILABLE_IP_TYPES]
 - edge_type must exactly match one of: [AVAILABLE_EDGE_TYPES]
 - category must exactly match one of: [AVAILABLE_CATEGORIES]
 - If the user mentions "NUS" or "National University of Singapore", set search_term to "NATIONAL UNIVERSITY OF SINGAPORE".
-- If the user says "reset", "clear", "start over", or "show everything", set query_mode="standard", ip_type=null, edge_type=null, search_term=null, min_weight=1, max_edges=800, category=null, top_n_nodes=null, top_n_results=null.
+- If the user says "reset", "clear", "start over", or "show everything", set response_type="graph_query", query_mode="standard", ip_type=null, edge_type=null, search_term=null, min_weight=1, max_edges=200, category=null, top_n_nodes=null, top_n_results=null.
 - For "similar_no_collab" mode, search_term is required.
 - Always return ONLY valid JSON. No markdown fences, no extra text."""
 
@@ -577,7 +1048,7 @@ def extract_filters_from_llm(
 
     response = client.messages.create(
         model="claude-sonnet-4-5",
-        max_tokens=512,
+        max_tokens=1024,
         system=system,
         messages=messages,
     )
@@ -680,6 +1151,7 @@ if "filter_state" not in st.session_state:
         "top_n_results": None,
         "subject_filter": None,
         "has_queried": False,
+        "recommendation_data": None,
     }
 
 if "chat_history" not in st.session_state:
@@ -701,7 +1173,7 @@ with st.sidebar:
         ip_types,
         index=ip_types.index(st.session_state.filter_state["ip_type"]) if st.session_state.filter_state["ip_type"] in ip_types else 0,
         key="sb_ip_type",
-        on_change=lambda: (st.session_state.filter_state.update({"ip_type": st.session_state.sb_ip_type, "top_n_nodes": None, "query_mode": "standard", "has_queried": True}), run_query.clear()),
+        on_change=lambda: (st.session_state.filter_state.update({"ip_type": st.session_state.sb_ip_type, "top_n_nodes": None, "query_mode": "standard", "has_queried": True, "recommendation_data": None}), run_query.clear()),
     )
 
     st.selectbox(
@@ -747,16 +1219,7 @@ with st.sidebar:
     )
 
     st.divider()
-    st.markdown(
-        """
-        **Legend**  
-        🔴 NUS-affiliated  
-        🟠 Research subject  
-        🔵 Patent applicant  
-        🟢 Publication institute  
-        ⚪ Other  
-        """
-    )
+    st.caption("Use the AI assistant below the graph to explore the network.")
 
 # -----------------------------
 # Read effective filters (may have been updated by LLM)
@@ -779,6 +1242,18 @@ has_queried = fs.get("has_queried", False)
 # Main output
 # -----------------------------
 st.subheader("🗺️ Collaboration Network")
+st.markdown(
+    "<span style='font-size:13px'>"
+    "🟠 NUS-affiliated &nbsp;|&nbsp; "
+    "🔴 New opportunity &nbsp;|&nbsp; "
+    "🔵 Patent applicant / existing partner &nbsp;|&nbsp; "
+    "🩵 Publication institute &nbsp;|&nbsp; "
+    "🟡 Patent subject &nbsp;|&nbsp; "
+    "🟤 Publication subject &nbsp;|&nbsp; "
+    "⚪ Other"
+    "</span>",
+    unsafe_allow_html=True,
+)
 
 if not has_queried:
     st.info(
@@ -789,6 +1264,69 @@ if not has_queried:
         "- _'Show corporations with similar research interests to NUS that haven\\'t collaborated before'_\n\n"
         "Or use the manual filters in the sidebar."
     )
+
+elif query_mode == "recommendation":
+    # --- Recommendation mode ---
+    rec_data = fs.get("recommendation_data")
+    if not rec_data:
+        st.info("Ask the AI assistant for recommendations — try: _'Recommend industry partners for NUS in AI'_")
+    else:
+        recs_df = pd.DataFrame(rec_data["recs_df"])
+        institution = rec_data["institution"]
+        subject_filter = rec_data.get("subject_filter")
+        org_ids = recs_df["ORG_ID"].tolist()
+
+        subject_context = f" in {subject_filter}" if subject_filter else ""
+        st.markdown(f"Showing supporting evidence for recommended industry partners for **{institution.title()}**{subject_context}.")
+
+        tab1, tab2 = st.tabs(["📚 Shared Research Subjects", "🌐 Partner Industry Network"])
+
+        with tab1:
+            st.caption("🔴 New opportunity  🔵 Existing partner  🟡 Patent subjects  🟠 Publication subjects")
+            with st.spinner("Loading shared subjects graph…"):
+                subj_edges_df = run_recommendation_subject_edges(institution, org_ids, subject_filter)
+            if subj_edges_df.empty:
+                st.info("No subject edges found.")
+            else:
+                html1 = build_recommendation_shared_subjects_graph(recs_df, subj_edges_df, institution)
+                html1 = inject_png_download(html1, "shared_subjects.png")
+                components.html(html1, height=620, scrolling=True)
+
+        with tab2:
+            st.caption("🔴 New opportunity  🔵 Existing partner  🟢 Their existing collaborators")
+            with st.spinner("Loading industry network graph…"):
+                collab_df = run_org_collaborators_query(org_ids)
+            if collab_df.empty:
+                st.info("No collaborator data found.")
+            else:
+                html2 = build_recommendation_network_graph(recs_df, collab_df)
+                html2 = inject_png_download(html2, "industry_network.png")
+                components.html(html2, height=620, scrolling=True)
+
+        st.subheader("📋 Summary table")
+        summary_df = recs_df[[
+            "ORG_NAME", "ORG_CATEGORY",
+            "PATENT_SHARED_SUBJECTS", "PATENT_STRENGTH",
+            "PUB_SHARED_SUBJECTS", "PUB_STRENGTH",
+            "TOTAL_SHARED_SUBJECTS", "TOTAL_STRENGTH", "IS_NEW_OPPORTUNITY"
+        ]].copy()
+        summary_df.columns = [
+            "Organisation", "Category",
+            "Patent Subjects", "Patent Strength",
+            "Pub Subjects", "Pub Strength",
+            "Total Subjects", "Total Strength", "New Opportunity"
+        ]
+        summary_df.index = range(1, len(summary_df) + 1)
+        st.dataframe(summary_df, use_container_width=True)
+
+        col1, col2 = st.columns([1, 5])
+        with col1:
+            st.download_button(
+                label="⬇️ Download CSV",
+                data=summary_df.to_csv().encode("utf-8"),
+                file_name="recommendations.csv",
+                mime="text/csv",
+            )
 
 elif query_mode == "similar_no_collab":
     # --- Similar interests, no prior collaboration mode ---
@@ -971,7 +1509,6 @@ with st.form(key="chat_form", clear_on_submit=True):
         submitted = st.form_submit_button("Send ➤", use_container_width=True)
 
 if submitted and user_input.strip():
-    # Show user message immediately
     st.session_state.chat_display.append({"role": "user", "content": user_input})
 
     with st.spinner("Thinking…"):
@@ -984,34 +1521,102 @@ if submitted and user_input.strip():
                 available_categories=categories_raw,
             )
 
-            explanation = parsed.pop("explanation", "Filters updated.")
+            response_type = parsed.get("response_type", "graph_query")
 
-            new_fs = apply_llm_filters(
-                parsed,
-                st.session_state.filter_state,
-                ip_types_raw,
-                edge_types_raw,
-                categories_raw,
-            )
-            new_fs["has_queried"] = True
-            st.session_state.filter_state = new_fs
+            if response_type == "general_answer":
+                # --- General knowledge answer — don't touch filters ---
+                answer = parsed.get("answer", "I'm not sure about that. Try rephrasing your question.")
+                st.session_state.chat_history.append({"role": "user", "content": user_input})
+                st.session_state.chat_history.append({"role": "assistant", "content": answer})
+                st.session_state.chat_display.append({
+                    "role": "assistant",
+                    "content": answer,
+                    "filters": None,
+                })
 
-            # Build a readable summary of what changed
-            changed = {k: v for k, v in parsed.items() if v is not None}
+            elif response_type == "recommendation":
+                # --- Recommendation mode — fetch data, generate written recs ---
+                search_term_val = parsed.get("search_term", "NATIONAL UNIVERSITY OF SINGAPORE") or "NATIONAL UNIVERSITY OF SINGAPORE"
+                subject_val = parsed.get("subject_filter")
+                category_val = parsed.get("category", "Corporation") or "Corporation"
 
-            # Store in chat histories
-            st.session_state.chat_history.append({"role": "user", "content": user_input})
-            st.session_state.chat_history.append({"role": "assistant", "content": explanation})
+                with st.spinner("Fetching partner data from Snowflake…"):
+                    recs_df = run_recommendation_query(
+                        institution=search_term_val,
+                        subject_filter=subject_val,
+                        category=category_val,
+                        top_n=3,
+                    )
 
-            st.session_state.chat_display.append({
-                "role": "assistant",
-                "content": explanation,
-                "filters": changed if changed else None,
-            })
+                if recs_df.empty:
+                    answer = "No matching organisations found. Try broadening the subject area or category."
+                else:
+                    org_ids = recs_df["ORG_ID"].tolist()
+                    with st.spinner("Fetching relevant titles…"):
+                        titles_df = run_titles_for_orgs(
+                            institution=search_term_val,
+                            org_ids=org_ids,
+                            subject_filter=subject_val,
+                        )
+
+                    with st.spinner("Generating recommendations…"):
+                        rec_text = generate_recommendations(
+                            recs_df,
+                            search_term_val,
+                            subject_val,
+                            titles_df=titles_df,
+                        )
+
+                    # Store recommendation data for graph rendering
+                    st.session_state.filter_state["recommendation_data"] = {
+                        "recs_df": recs_df.to_dict("records"),
+                        "institution": search_term_val,
+                        "subject_filter": subject_val,
+                        "category": category_val,
+                    }
+                    st.session_state.filter_state["has_queried"] = True
+                    st.session_state.filter_state["query_mode"] = "recommendation"
+
+                    answer = rec_text
+
+                st.session_state.chat_history.append({"role": "user", "content": user_input})
+                st.session_state.chat_history.append({"role": "assistant", "content": answer})
+                st.session_state.chat_display.append({
+                    "role": "assistant",
+                    "content": answer,
+                    "filters": None,
+                })
+
+            else:
+                # --- Graph query — update filters as normal ---
+                explanation = parsed.pop("explanation", "Filters updated.")
+                parsed.pop("answer", None)
+                parsed.pop("response_type", None)
+
+                new_fs = apply_llm_filters(
+                    parsed,
+                    st.session_state.filter_state,
+                    ip_types_raw,
+                    edge_types_raw,
+                    categories_raw,
+                )
+                new_fs["has_queried"] = True
+                st.session_state.filter_state = new_fs
+
+                changed = {k: v for k, v in parsed.items() if v is not None}
+
+                st.session_state.chat_history.append({"role": "user", "content": user_input})
+                st.session_state.chat_history.append({"role": "assistant", "content": explanation})
+                st.session_state.chat_display.append({
+                    "role": "assistant",
+                    "content": explanation,
+                    "filters": changed if changed else None,
+                })
+
+                run_query.clear()
 
         except Exception as e:
             error_msg = f"Sorry, I couldn't understand that request. Please try rephrasing. (Error: {e})"
             st.session_state.chat_display.append({"role": "assistant", "content": error_msg})
 
-    run_query.clear()
     st.rerun()
