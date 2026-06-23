@@ -346,6 +346,13 @@ yr_min, yr_max = year_range
 ip_filter = "(" + ", ".join(f"'{t}'" for t in ip_types) + ")" if ip_types else "('Publications','Patents')"
 
 
+c1, c2, _ = st.columns([2, 2, 6])
+with c1:
+    if st.button("🔬 Research Collaboration Explorer", use_container_width=True):
+        st.switch_page("pages/1_Research_Collaboration_Explorer.py")
+with c2:
+    st.button("📊 Industry Intelligence Dashboard", disabled=True, use_container_width=True)
+
 # ── SINGAPORE BANNER ─────────────────────────────────────────────────────────
 st.markdown(
     "<div class='sg-banner'>"

@@ -12,6 +12,13 @@ from docx import Document
 from docx.shared import Pt, RGBColor, Inches
 
 
+c1, c2, _ = st.columns([2, 2, 6])
+with c1:
+    st.button("🔬 Research Collaboration Explorer", disabled=True, use_container_width=True)
+with c2:
+    if st.button("📊 Industry Intelligence Dashboard", use_container_width=True):
+        st.switch_page("pages/2_Industry_Intelligence_Dashboard.py")
+
 st.title("🔬 Research Collaboration Explorer")
 st.write("Discover institutions and corporations with shared research interests for potential collaboration.")
 
