@@ -341,11 +341,13 @@ org_matches AS (
     FULL OUTER JOIN org_pubs pub ON p.ORG_ID = pub.ORG_ID
 ),
 direct_collabs AS (
-    SELECT DISTINCT
-        CASE WHEN SOURCE_NAME ILIKE '%{safe_inst}%' THEN TARGET ELSE SOURCE END AS COLLAB_ID
+    SELECT
+        CASE WHEN SOURCE_NAME ILIKE '%{safe_inst}%' THEN TARGET ELSE SOURCE END AS COLLAB_ID,
+        SUM(WEIGHT) AS COLLAB_COUNT
     FROM GRAPH_NETWORK.GRAPH.ALL_EDGES_ENRICHED
     WHERE (SOURCE_NAME ILIKE '%{safe_inst}%' OR TARGET_NAME ILIKE '%{safe_inst}%')
     AND EDGE_TYPE IN ('Applicant_Applicant', 'Institution_Institution')
+    GROUP BY 1
 ),
 org_subjects_list AS (
     SELECT ORG_ID,
@@ -364,6 +366,7 @@ SELECT
     m.TOTAL_SHARED_SUBJECTS,
     m.TOTAL_STRENGTH,
     CASE WHEN dc.COLLAB_ID IS NULL THEN TRUE ELSE FALSE END AS IS_NEW_OPPORTUNITY,
+    COALESCE(dc.COLLAB_COUNT, 0) AS COLLAB_COUNT,
     sl.SHARED_SUBJECT_NAMES
 FROM org_matches m
 LEFT JOIN direct_collabs dc ON m.ORG_ID = dc.COLLAB_ID
@@ -554,24 +557,29 @@ def generate_recommendations(
 
     prompt = f"""You are a research collaboration advisor at {institution}.
 
-Based on the data below, write concise recommendations for the top {len(recs_df)} industry partners for {institution}{subject_context}.
-
-For each organisation write 3-4 sentences covering:
-1. What the organisation does and their relevance to the shared research areas — use the actual patent/publication titles as evidence of their research focus
-2. Their patent and publication overlap with {institution} (use the actual numbers)
-3. Why they are a strong collaboration candidate based on both the subject overlap and the nature of their research titles
-4. Whether they are a new opportunity or existing partner and what that means strategically
+Based on the data below, write structured recommendations for the top {len(recs_df)} industry partners for {institution}{subject_context}.
 
 Use the tier labels exactly as shown (🆕 New Opportunity or 🤝 Existing Partner).
-Be specific and data-driven. Reference actual titles where relevant to justify the recommendation.
+Be specific and data-driven. Reference actual titles where relevant.
 Write in a professional but accessible tone for senior stakeholders.
 
 Data:
 {data_str}
 
-Format each recommendation as:
-**[Rank]. [Organisation Name]** [tier label]
-[Your 3-4 sentence recommendation]
+Format each recommendation exactly as follows (use markdown):
+
+---
+**[Rank]. [Organisation Name]** — [tier label]
+
+**About:** 1-2 sentences on what the organisation does and their research focus, citing specific patent/publication titles as evidence.
+
+**Overlap with {institution}:**
+- Patents: [X shared subjects, strength Y] — note key overlapping topics
+- Publications: [X shared subjects, strength Y] — note key overlapping topics
+
+**Why collaborate:** 1-2 sentences on why they are a strong candidate, referencing the nature of the overlap and any strategic angle.
+
+**Strategic note:** One sentence on what the tier label means in practice (new opportunity = untapped; existing partner = deepen).
 """
 
     response = client.messages.create(
@@ -608,13 +616,19 @@ def build_recommendation_shared_subjects_graph(
         for _, row in recs_df.iterrows()
     }
 
-    for _, row in subject_edges_df.iterrows():
+    # Aggregate weights per (org, subject) pair so each subject is one node
+    agg = (
+        subject_edges_df
+        .groupby(["ORG_ID", "ORG_NAME", "SUBJECT_ID", "SUBJECT_NAME"], as_index=False)["WEIGHT"]
+        .sum()
+    )
+
+    for _, row in agg.iterrows():
         org_id = str(row["ORG_ID"])
         org_name = str(row["ORG_NAME"])
         subj_id = str(row["SUBJECT_ID"])
         subj_name = str(row["SUBJECT_NAME"])
         weight = float(row["WEIGHT"])
-        ip_type = str(row["IP_TYPE"])
 
         meta = org_meta.get(org_id, {})
 
@@ -630,19 +644,17 @@ def build_recommendation_shared_subjects_graph(
             )
             added_orgs.add(org_id)
 
-        subj_key = f"{subj_id}_{ip_type}"
-        if subj_key not in added_subjects:
-            subj_color = "#FFD700" if ip_type == "Patents" else "#F4B183"
+        if subj_id not in added_subjects:
             net.add_node(
-                subj_key,
-                label=f"{subj_name}\n({ip_type})",
-                title=f"Subject: {subj_name}\nType: {ip_type}",
-                color=subj_color,
+                subj_id,
+                label=subj_name,
+                title=f"Subject: {subj_name}",
+                color="#F4B183",
                 value=2,
             )
-            added_subjects.add(subj_key)
+            added_subjects.add(subj_id)
 
-        net.add_edge(org_id, subj_key, value=weight, title=f"Strength: {weight:.0f}\n{ip_type}")
+        net.add_edge(org_id, subj_id, value=weight, title=f"Strength: {weight:.0f}")
 
     return net.generate_html(notebook=False)
 
@@ -1216,12 +1228,14 @@ with st.sidebar:
         on_change=lambda: (st.session_state.filter_state.update({"ip_type": st.session_state.sb_ip_type, "top_n_nodes": None, "query_mode": "standard", "has_queried": True, "recommendation_data": None}), run_query.clear()),
     )
 
+    subject_options = ["All"] + subjects_raw
+    current_subject = st.session_state.filter_state.get("subject_filter") or "All"
     st.selectbox(
-        "Connection type",
-        edge_types,
-        index=edge_types.index(st.session_state.filter_state["edge_type"]) if st.session_state.filter_state["edge_type"] in edge_types else 0,
-        key="sb_edge_type",
-        on_change=lambda: (st.session_state.filter_state.update({"edge_type": st.session_state.sb_edge_type, "top_n_nodes": None, "query_mode": "standard", "has_queried": True}), run_query.clear()),
+        "Research subject",
+        subject_options,
+        index=subject_options.index(current_subject) if current_subject in subject_options else 0,
+        key="sb_subject_filter",
+        on_change=lambda: (st.session_state.filter_state.update({"subject_filter": st.session_state.sb_subject_filter if st.session_state.sb_subject_filter != "All" else None, "top_n_nodes": None, "query_mode": "standard", "has_queried": True}), run_query.clear()),
     )
 
     st.selectbox(
@@ -1333,8 +1347,7 @@ with graph_col:
                     "<span style='font-size:15px'>"
                     "<span style='color:#ff6b6b'>■</span> New opportunity &nbsp;|&nbsp; "
                     "<span style='color:#9DC3E6'>■</span> Existing partner &nbsp;|&nbsp; "
-                    "<span style='color:#FFD700'>■</span> Patent subjects &nbsp;|&nbsp; "
-                    "<span style='color:#F4B183'>■</span> Publication subjects"
+                    "<span style='color:#F4B183'>■</span> Shared research subjects"
                     "</span>",
                     unsafe_allow_html=True,
                 )
@@ -1388,14 +1401,21 @@ with graph_col:
                 "ORG_NAME", "ORG_CATEGORY",
                 "PATENT_SHARED_SUBJECTS", "PATENT_STRENGTH",
                 "PUB_SHARED_SUBJECTS", "PUB_STRENGTH",
-                "TOTAL_SHARED_SUBJECTS", "TOTAL_STRENGTH", "IS_NEW_OPPORTUNITY"
+                "TOTAL_SHARED_SUBJECTS", "TOTAL_STRENGTH",
+                "IS_NEW_OPPORTUNITY", "COLLAB_COUNT",
             ]].copy()
             summary_df.columns = [
                 "Organisation", "Category",
                 "Patent Shared Subjects", "Patent Count",
                 "Publication Shared Subjects", "Publication Count",
-                "Total Shared Subjects", "Total Count", "New Opportunity"
+                "Total Shared Subjects", "Total Count",
+                "New Opportunity", "Existing Collaborations",
             ]
+            # Only show collaboration count for existing partners
+            summary_df["Existing Collaborations"] = summary_df.apply(
+                lambda r: int(r["Existing Collaborations"]) if not r["New Opportunity"] else "—",
+                axis=1,
+            )
             summary_df.index = range(1, len(summary_df) + 1)
             st.dataframe(summary_df, use_container_width=True)
 
@@ -1475,8 +1495,9 @@ with graph_col:
         if selected_ip_type != "All":
             where_clauses.append(f"IP_TYPE = '{sql_escape(selected_ip_type)}'")
 
-        if selected_edge_type != "All":
-            where_clauses.append(f"EDGE_TYPE = '{sql_escape(selected_edge_type)}'")
+        if subject_filter:
+            safe_subj = sql_escape(subject_filter)
+            where_clauses.append(f"(SOURCE_NAME ILIKE '%{safe_subj}%' OR TARGET_NAME ILIKE '%{safe_subj}%')")
 
         if selected_category != "All":
             safe_cat = sql_escape(selected_category)
