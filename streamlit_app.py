@@ -1309,8 +1309,7 @@ with graph_col:
         "<span style='color:#9DC3E6'>■</span> Patent applicant / existing partner &nbsp;|&nbsp; "
         "<span style='color:#33cccc'>■</span> Publication institute"
         "<br>"
-        "<span style='color:#FFD700'>■</span> Patent subject &nbsp;|&nbsp; "
-        "<span style='color:#F4B183'>■</span> Publication subject &nbsp;|&nbsp; "
+        "<span style='color:#F4B183'>■</span> Shared Subject Area &nbsp;|&nbsp; "
         "<span style='color:#D9D9D9'>■</span> Other"
         "</span>",
         unsafe_allow_html=True,
@@ -1419,7 +1418,7 @@ with graph_col:
             summary_df.index = range(1, len(summary_df) + 1)
             st.dataframe(summary_df, use_container_width=True)
 
-            col1, col2 = st.columns([1, 5])
+            col1, col2, col3 = st.columns([1, 1, 4])
             with col1:
                 st.download_button(
                     label="⬇️ Download CSV",
@@ -1427,6 +1426,15 @@ with graph_col:
                     file_name="recommendations.csv",
                     mime="text/csv",
                 )
+            with col2:
+                rec_text = rec_data.get("rec_text", "")
+                if rec_text:
+                    st.download_button(
+                        label="⬇️ Download Report",
+                        data=rec_text.encode("utf-8"),
+                        file_name="recommendations_report.txt",
+                        mime="text/plain",
+                    )
 
     elif query_mode == "similar_no_collab":
         # --- Similar interests, no prior collaboration mode ---
@@ -1673,6 +1681,7 @@ if submitted and user_input.strip():
                         "recs_df": recs_df.to_dict("records"),
                         "institution": search_term_val,
                         "subject_filter": subject_val,
+                        "rec_text": rec_text,
                         "category": category_val,
                     }
                     st.session_state.filter_state["has_queried"] = True
