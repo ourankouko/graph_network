@@ -25,13 +25,6 @@ except ImportError:
 
 warnings.filterwarnings("ignore")
 
-# ── PAGE CONFIG ───────────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="NUS Industry Collaboration Intelligence",
-    page_icon="🎓",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
 
 # ── NUS COLOUR PALETTE ────────────────────────────────────────────────────────
 NUS_BLUE   = "#003D7C"
