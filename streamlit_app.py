@@ -17,6 +17,12 @@ from docx.shared import Pt, RGBColor, Inches
 # -----------------------------
 st.set_page_config(page_title="Research Collaboration Explorer", layout="wide", initial_sidebar_state="auto")
 
+col_nav1, col_nav2, col_nav3 = st.columns([2, 2, 6])
+with col_nav1:
+    st.page_link("streamlit_app.py", label="🔬 Research Collaboration Explorer", use_container_width=True)
+with col_nav2:
+    st.page_link("pages/2_Industry_Intelligence_Dashboard.py", label="📊 Industry Intelligence", use_container_width=True)
+
 st.title("🔬 Research Collaboration Explorer")
 st.write("Discover institutions and corporations with shared research interests for potential collaboration.")
 
