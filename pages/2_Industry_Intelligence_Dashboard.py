@@ -925,5 +925,5 @@ with t5:
                                     xaxis=dict(tickfont=dict(size=11)),
                                     yaxis=dict(tickfont=dict(size=11)))
                 st.plotly_chart(fig3, use_container_width=True)
-            insight("Darker cells = higher research output in that unit–subject pair. "
-                    "Use this to match the right NUS unit to the right industry
+            insight("Darker cells = higher research output in that unit-subject pair. "
+                    "Use this to match the right NUS unit to the right industry partner by topic.")
