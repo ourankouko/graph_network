@@ -1303,7 +1303,6 @@ if "chat_display" not in st.session_state:
 # -----------------------------
 with st.sidebar:
     st.header("⚙️ Manual Filters")
-    st.caption("Or just ask the AI assistant below the graph.")
 
     st.selectbox(
         "Research output type",
@@ -1358,7 +1357,6 @@ with st.sidebar:
     )
 
     st.divider()
-    st.caption("Use the AI assistant below the graph to explore the network.")
 
 # -----------------------------
 # Read effective filters (may have been updated by LLM)
