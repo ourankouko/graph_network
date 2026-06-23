@@ -25,7 +25,6 @@ except ImportError:
 
 warnings.filterwarnings("ignore")
 
-
 # ── NUS COLOUR PALETTE ────────────────────────────────────────────────────────
 NUS_BLUE   = "#003D7C"
 NUS_ORANGE = "#EF7C00"
@@ -59,11 +58,17 @@ html, body, [class*="css"]          {{ font-size:15px; }}
     background:#0A3060; color:{WHITE} !important;
     border:1px solid #1A5090; border-radius:6px; font-size:14px;
 }}
-[data-testid="stSidebar"] .stButton > button {{
-    background:{NUS_ORANGE}; color:{WHITE}; border:none;
-    border-radius:6px; font-weight:700; font-size:14px;
+[data-testid="stSidebar"] button,
+[data-testid="stSidebar"] .stButton > button,
+section[data-testid="stSidebar"] button {{
+    background:#2E6DA4 !important; color:{WHITE} !important; border:none !important;
+    border-radius:6px !important; font-weight:600 !important; font-size:14px !important;
 }}
-[data-testid="stSidebar"] .stButton > button:hover {{ background:#D06000; }}
+[data-testid="stSidebar"] button:hover,
+[data-testid="stSidebar"] .stButton > button:hover,
+section[data-testid="stSidebar"] button:hover {{
+    background:#245888 !important; color:{WHITE} !important;
+}}
 
 /* ----- cards ----- */
 .kpi-card {{
@@ -79,10 +84,11 @@ html, body, [class*="css"]          {{ font-size:15px; }}
     background:linear-gradient(135deg,{NUS_BLUE},{NUS_LBLUE});
     color:{WHITE}; border-radius:10px; padding:1rem 1.2rem;
     box-shadow:0 4px 12px rgba(0,61,124,0.22);
+    min-height:160px; display:flex; flex-direction:column;
 }}
 .spotlight-num  {{ font-size:2.2rem; font-weight:800; color:{NUS_ORANGE}; }}
 .spotlight-lbl  {{ font-size:14px; color:#B0CCE8; margin-top:0.1rem; font-weight:600; }}
-.spotlight-body {{ font-size:13px; color:#D6E4F0; margin-top:0.4rem; line-height:1.55; }}
+.spotlight-body {{ font-size:13px; color:#D6E4F0; margin-top:0.4rem; line-height:1.55; flex:1; }}
 
 .exec-box {{
     background:{WHITE}; border-radius:10px; padding:1.2rem 1.4rem;
@@ -181,10 +187,16 @@ def clean_fig(fig, h=380):
     return fig
 
 def hbar(df, x, y, h=380, color=NUS_BLUE):
+    # Truncate long labels so they don't get clipped
+    df = df.copy()
+    df[y] = df[y].astype(str).str[:40]
     fig = px.bar(df, x=x, y=y, orientation="h",
                  color_discrete_sequence=[color],
                  labels={x: "", y: ""})
-    fig.update_layout(yaxis=dict(autorange="reversed"))
+    fig.update_layout(
+        yaxis=dict(autorange="reversed", automargin=True),
+        margin=dict(t=25, b=50, l=220, r=30),  # generous left margin for labels
+    )
     return clean_fig(fig, h)
 
 def insight(md):
@@ -294,17 +306,11 @@ with st.sidebar:
     api_key = st.secrets.get("anthropic", {}).get("api_key", "")
     if not api_key or api_key.startswith("YOUR_"):
         st.markdown(
-            f"<div style='font-size:13px;color:{NUS_ORANGE}'>⚠ Add Anthropic API key to secrets.toml</div>",
+            f"<div style='font-size:13px;color:#7EB3D8'>⚠ Add Anthropic API key to secrets.toml</div>",
             unsafe_allow_html=True,
         )
         api_key = st.text_input("API key:", type="password", key="tmp_key",
                                  label_visibility="collapsed")
-
-    sidebar_q = st.text_area(
-        "Question:", height=90, key="sidebar_q",
-        placeholder="e.g. Which partners collaborated most with NUS in biomedical patents?",
-        label_visibility="collapsed",
-    )
 
     EXAMPLES = [
         "Top 10 industry partners in NUS patents",
@@ -318,7 +324,13 @@ with st.sidebar:
         if st.button(ex, key=f"ex_{ex}", use_container_width=True):
             st.session_state["pending_q"] = ex
 
-    ask_btn = st.button("▶ Ask", use_container_width=True, key="ask_btn")
+    sidebar_q = st.text_area(
+        "Question:", height=90, key="sidebar_q",
+        placeholder="e.g. Which partners collaborated most with NUS in biomedical patents?",
+        label_visibility="collapsed",
+    )
+
+    ask_btn = st.button("▶ Search Data", use_container_width=True, key="ask_btn")
 
     if (ask_btn or "pending_q" in st.session_state) and (sidebar_q or st.session_state.get("pending_q")):
         q = st.session_state.pop("pending_q", None) or sidebar_q
@@ -346,12 +358,14 @@ yr_min, yr_max = year_range
 ip_filter = "(" + ", ".join(f"'{t}'" for t in ip_types) + ")" if ip_types else "('Publications','Patents')"
 
 
-c1, c2, _ = st.columns([2, 2, 6])
-with c1:
+# ── PAGE NAVIGATION ──────────────────────────────────────────────────────────
+nav_col1, nav_col2, nav_spacer = st.columns([1, 1, 6])
+with nav_col1:
     if st.button("🔬 Research Collaboration Explorer", use_container_width=True):
         st.switch_page("pages/1_Research_Collaboration_Explorer.py")
-with c2:
-    st.button("📊 Industry Intelligence Dashboard", disabled=True, use_container_width=True)
+with nav_col2:
+    if st.button("📊 Industry Intelligence Dashboard", use_container_width=True):
+        st.switch_page("pages/2_Industry_Intelligence_Dashboard.py")
 
 # ── SINGAPORE BANNER ─────────────────────────────────────────────────────────
 st.markdown(
@@ -366,7 +380,7 @@ st.markdown(
 
 st.markdown(
     f"<h1 style='color:{NUS_BLUE};margin:0 0 0.1rem;font-size:1.7rem'>"
-    "Industry Collaboration Intelligence</h1>"
+    "SG Industry Collaboration Overview</h1>"
     f"<p style='color:{SLATE};font-size:14px;margin:0'>NUS Research Strategy &nbsp;·&nbsp; "
     f"{yr_min}–{yr_max} &nbsp;·&nbsp; {', '.join(ip_types) if ip_types else 'All IP types'}</p>",
     unsafe_allow_html=True,
@@ -471,7 +485,6 @@ with t1:
         GROUP BY 1,2,3 ORDER BY 1
     """)
 
-    # Patent decline for exec summary
     pat_yr  = trend_df[(trend_df["SRC"]=="NUS") & (trend_df["IP_TYPE"]=="Patents")]
     pat_chg = 0
     if not pat_yr.empty and len(pat_yr) > 1:
@@ -479,7 +492,6 @@ with t1:
         p1 = pat_yr.sort_values("YEAR").iloc[-1]["CNT"]
         pat_chg = int((p1-p0)/p0*100) if p0 else 0
 
-    # ── Executive Summary ────────────────────────────────────────────────────
     st.markdown(
         f"<div class='exec-box'>"
         f"<div class='exec-title'>📋 Executive Summary</div>"
@@ -547,7 +559,7 @@ with t2:
                 "Services (biomedical) are NUS's two most active patent co-inventors. "
                 "Both have been consistent multi-year partners. Formalising joint IP "
                 "roadmaps with them should be the immediate priority.")
-
+        st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
         section("Top industry patent partners — NUS co-owned patents")
         pp = sql(f"""
             SELECT TRIM(f.VALUE::STRING) AS PARTNER, QS_SUBJECT AS SUBJECT,
@@ -567,12 +579,22 @@ with t2:
             section("Year trend — top 5 patent partners")
             top5 = top_p["PARTNER"].head(5).tolist()
             tr5  = pp[pp["PARTNER"].isin(top5)].groupby(["YEAR","PARTNER"])["CNT"].sum().reset_index()
+            # Shorten partner names so the legend doesn't overwhelm the chart
+            tr5["PARTNER"] = tr5["PARTNER"].str[:28]
             fig  = px.line(tr5, x="YEAR", y="CNT", color="PARTNER", markers=True,
                            color_discrete_sequence=CHART_COLS,
                            labels={"CNT":"Co-patents","YEAR":"Year","PARTNER":""})
-            fig.update_layout(xaxis=dict(tickmode="linear",dtick=1),
-                               legend=dict(font=dict(size=12)))
-            st.plotly_chart(clean_fig(fig,300), use_container_width=True)
+            fig.update_layout(
+                xaxis=dict(tickmode="linear", dtick=1),
+                legend=dict(
+                    orientation="h",          # horizontal legend below chart
+                    yanchor="top", y=-0.28,
+                    xanchor="left", x=0,
+                    font=dict(size=11),
+                ),
+                margin=dict(t=25, b=110, l=10, r=10),  # extra bottom room for legend
+            )
+            st.plotly_chart(clean_fig(fig, 340), use_container_width=True)
 
     with cb:
         section("What this tells us — publication units")
@@ -580,7 +602,7 @@ with t2:
                 "half of all NUS–industry co-publications. These units are the natural "
                 "bridge to pharmaceutical companies and health-tech investors. Target "
                 "them first for industry grant applications.")
-
+        st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
         section("NUS units with the most industry co-publications")
         ud = sql(f"""
             SELECT TRIM(f.VALUE::STRING) AS UNIT, COUNT(*) AS CNT
@@ -617,7 +639,6 @@ with t2:
 # TAB 3 — FUNDING ALIGNMENT
 # ════════════════════════════════════════════════════════════════════════════════
 with t3:
-    # Spotlight cards
     sp1, sp2, sp3, sp4 = st.columns(4)
     for col, num, lbl, body in [
         (sp1, "+31.7%", "Data Science patents growing",
@@ -779,7 +800,6 @@ with t4:
                 unsafe_allow_html=True,
             )
 
-    # Patent decline
     section("What this tells us — patent decline")
     alert("NUS patent filings have declined sharply while publications grew — "
           "a critical commercialisation pipeline failure. CS & Information Systems "
