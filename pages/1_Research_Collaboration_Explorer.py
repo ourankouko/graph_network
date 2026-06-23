@@ -1423,65 +1423,10 @@ with graph_col:
             org_ids = recs_df["ORG_ID"].tolist()
 
             subject_context = f" in {subject_filter}" if subject_filter else ""
-            st.markdown(f"Showing supporting evidence for recommended industry partners for **{institution.title()}**{subject_context}.")
+            st.markdown(f"Recommended industry partners for **{institution.title()}**{subject_context}.")
 
-            tab1, tab2 = st.tabs(["📚 Shared Research Subjects", "🌐 Partner Industry Network"])
-
-            with tab1:
-                st.markdown(
-                    "<span style='font-size:15px'>"
-                    "<span style='color:#ff6b6b'>■</span> New opportunity &nbsp;|&nbsp; "
-                    "<span style='color:#9DC3E6'>■</span> Existing partner &nbsp;|&nbsp; "
-                    "<span style='color:#F4B183'>■</span> Shared research subjects"
-                    "</span>",
-                    unsafe_allow_html=True,
-                )
-                with st.spinner("Loading shared subjects graph…"):
-                    subj_edges_df = run_recommendation_subject_edges(institution, org_ids, subject_filter)
-                if subj_edges_df.empty:
-                    st.info("No subject edges found.")
-                else:
-                    html1 = build_recommendation_shared_subjects_graph(recs_df, subj_edges_df, institution)
-                    html1 = inject_layout_controls(inject_png_download(html1, "shared_subjects.png"))
-                    components.html(html1, height=620, scrolling=True)
-                    col1, col2 = st.columns([1, 5])
-                    with col1:
-                        st.download_button(
-                            label="⬇️ Download CSV",
-                            data=subj_edges_df[["ORG_NAME", "SUBJECT_NAME", "IP_TYPE", "WEIGHT"]].to_csv(index=False).encode("utf-8"),
-                            file_name="shared_subjects.csv",
-                            mime="text/csv",
-                            key="dl_shared_subjects",
-                        )
-
-            with tab2:
-                st.markdown(
-                    "<span style='font-size:15px'>"
-                    "<span style='color:#ff6b6b'>■</span> New opportunity &nbsp;|&nbsp; "
-                    "<span style='color:#9DC3E6'>■</span> Existing partner &nbsp;|&nbsp; "
-                    "<span style='color:#33cccc'>■</span> Their existing collaborators"
-                    "</span>",
-                    unsafe_allow_html=True,
-                )
-                with st.spinner("Loading industry network graph…"):
-                    collab_df = run_org_collaborators_query(org_ids)
-                if collab_df.empty:
-                    st.info("No collaborator data found.")
-                else:
-                    html2 = build_recommendation_network_graph(recs_df, collab_df)
-                    html2 = inject_layout_controls(inject_png_download(html2, "industry_network.png"))
-                    components.html(html2, height=620, scrolling=True)
-                    col1, col2 = st.columns([1, 5])
-                    with col1:
-                        st.download_button(
-                            label="⬇️ Download CSV",
-                            data=collab_df[["SOURCE_NAME", "SOURCE_CATEGORY", "TARGET_NAME", "TARGET_CATEGORY", "EDGE_TYPE", "IP_TYPE", "WEIGHT"]].to_csv(index=False).encode("utf-8"),
-                            file_name="industry_network.csv",
-                            mime="text/csv",
-                            key="dl_industry_network",
-                        )
-
-            st.subheader("📋 Summary table")
+            # ── SUMMARY TABLE (shown first; click a row to explore its network) ─
+            st.subheader("📋 Summary")
             summary_df = recs_df[[
                 "ORG_NAME",
                 "IS_NEW_OPPORTUNITY", "COLLAB_COUNT",
@@ -1496,13 +1441,19 @@ with graph_col:
                 "Publication Shared Subjects", "Publication Count",
                 "Total Shared Subjects", "Total Count",
             ]
-            # Only show collaboration count for existing partners
             summary_df["Existing Collaborations"] = summary_df.apply(
                 lambda r: int(r["Existing Collaborations"]) if not r["New Opportunity"] else "—",
                 axis=1,
             )
             summary_df.index = range(1, len(summary_df) + 1)
-            st.dataframe(summary_df, use_container_width=True)
+
+            st.caption("Click a row to view that company's partner network.")
+            sel = st.dataframe(
+                summary_df,
+                on_select="rerun",
+                selection_mode="single-row",
+                use_container_width=True,
+            )
 
             col1, col2, col3 = st.columns([1, 1, 4])
             with col1:
@@ -1522,6 +1473,85 @@ with graph_col:
                         file_name="recommendations_report.docx",
                         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     )
+
+            # ── DETERMINE SELECTED ORG ────────────────────────────────────────
+            selected_org_id = None
+            selected_org_name = None
+            if sel.selection.rows:
+                idx = sel.selection.rows[0]
+                selected_org_row = recs_df.iloc[idx]
+                selected_org_id = str(selected_org_row["ORG_ID"])
+                selected_org_name = str(selected_org_row["ORG_NAME"])
+                filter_recs_df = recs_df[recs_df["ORG_ID"].astype(str) == selected_org_id]
+                filter_org_ids = [selected_org_id]
+            else:
+                filter_recs_df = recs_df
+                filter_org_ids = org_ids
+
+            # ── SUPPORTING CHARTS (expander, auto-opens when a row is selected) ─
+            chart_label = (
+                f"📊 Partner networks — {selected_org_name}"
+                if selected_org_name else "📊 View supporting charts (all partners)"
+            )
+            with st.expander(chart_label, expanded=selected_org_id is not None):
+                if selected_org_name:
+                    st.info(f"Showing networks for **{selected_org_name}**. Click another row to switch, or deselect to see all partners.")
+
+                tab1, tab2 = st.tabs(["📚 Shared Research Subjects", "🌐 Partner Industry Network"])
+
+                with tab1:
+                    st.markdown(
+                        "<span style='font-size:15px'>"
+                        "<span style='color:#ff6b6b'>■</span> New opportunity &nbsp;|&nbsp; "
+                        "<span style='color:#9DC3E6'>■</span> Existing partner &nbsp;|&nbsp; "
+                        "<span style='color:#F4B183'>■</span> Shared research subjects"
+                        "</span>",
+                        unsafe_allow_html=True,
+                    )
+                    with st.spinner("Loading shared subjects graph…"):
+                        subj_edges_df = run_recommendation_subject_edges(institution, filter_org_ids, subject_filter)
+                    if subj_edges_df.empty:
+                        st.info("No subject edges found.")
+                    else:
+                        html1 = build_recommendation_shared_subjects_graph(filter_recs_df, subj_edges_df, institution)
+                        html1 = inject_layout_controls(inject_png_download(html1, "shared_subjects.png"))
+                        components.html(html1, height=620, scrolling=True)
+                        col1, col2 = st.columns([1, 5])
+                        with col1:
+                            st.download_button(
+                                label="⬇️ Download CSV",
+                                data=subj_edges_df[["ORG_NAME", "SUBJECT_NAME", "IP_TYPE", "WEIGHT"]].to_csv(index=False).encode("utf-8"),
+                                file_name="shared_subjects.csv",
+                                mime="text/csv",
+                                key="dl_shared_subjects",
+                            )
+
+                with tab2:
+                    st.markdown(
+                        "<span style='font-size:15px'>"
+                        "<span style='color:#ff6b6b'>■</span> New opportunity &nbsp;|&nbsp; "
+                        "<span style='color:#9DC3E6'>■</span> Existing partner &nbsp;|&nbsp; "
+                        "<span style='color:#33cccc'>■</span> Their existing collaborators"
+                        "</span>",
+                        unsafe_allow_html=True,
+                    )
+                    with st.spinner("Loading industry network graph…"):
+                        collab_df = run_org_collaborators_query(filter_org_ids)
+                    if collab_df.empty:
+                        st.info("No collaborator data found.")
+                    else:
+                        html2 = build_recommendation_network_graph(filter_recs_df, collab_df)
+                        html2 = inject_layout_controls(inject_png_download(html2, "industry_network.png"))
+                        components.html(html2, height=620, scrolling=True)
+                        col1, col2 = st.columns([1, 5])
+                        with col1:
+                            st.download_button(
+                                label="⬇️ Download CSV",
+                                data=collab_df[["SOURCE_NAME", "SOURCE_CATEGORY", "TARGET_NAME", "TARGET_CATEGORY", "EDGE_TYPE", "IP_TYPE", "WEIGHT"]].to_csv(index=False).encode("utf-8"),
+                                file_name="industry_network.csv",
+                                mime="text/csv",
+                                key="dl_industry_network",
+                            )
 
     elif query_mode == "similar_no_collab":
         # --- Similar interests, no prior collaboration mode ---
