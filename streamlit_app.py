@@ -15,7 +15,7 @@ from docx.shared import Pt, RGBColor, Inches
 # -----------------------------
 # Page setup
 # -----------------------------
-st.set_page_config(page_title="Research Collaboration Explorer", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Research Collaboration Explorer", layout="wide", initial_sidebar_state="auto")
 
 st.title("🔬 Research Collaboration Explorer")
 st.write("Discover institutions and corporations with shared research interests for potential collaboration.")
@@ -68,7 +68,7 @@ def get_node_color(node_type: str, node_name: str, nus_affiliated) -> str:
         return "#F4B183"
 
     if "APPLICANT" in node_type:
-        return "#9DC3E6"
+        return "#ccccff"
 
     if "INSTITUTE" in node_type:
         return "#33cccc"
@@ -565,6 +565,8 @@ Based on the data below, write structured recommendations for the top {len(recs_
 Use the tier labels exactly as shown (🆕 New Opportunity or 🤝 Existing Partner).
 Be specific and data-driven. Reference actual titles where relevant.
 Write in a professional but accessible tone for senior stakeholders.
+Do NOT add any title or heading before the recommendations. Start directly with the first --- divider.
+Use only **bold** for emphasis — do not use # or ## headings anywhere in your response.
 
 Data:
 {data_str}
@@ -1386,15 +1388,16 @@ chat_col, graph_col = st.columns([2, 3], gap="large")
 with graph_col:
     st.subheader("🗺️ Collaboration Network")
     st.markdown(
-        "<span style='font-size:14px'>"
+        "<span style='font-size:15px'>"
         "<span style='color:#ff9933'>■</span> NUS-affiliated &nbsp;|&nbsp; "
         "<span style='color:#ff6b6b'>■</span> New opportunity &nbsp;|&nbsp; "
-        "<span style='color:#9DC3E6'>■</span> Patent applicant / existing partner &nbsp;|&nbsp; "
-        "<span style='color:#33cccc'>■</span> Publication institute"
-        "<br>"
+        "<span style='color:#ccccff'>■</span> Patent applicant &nbsp;|&nbsp; "
+        "<span style='color:#9DC3E6'>■</span> Existing partner &nbsp;|&nbsp; "
+        "<span style='color:#33cccc'>■</span> Publication institute &nbsp;|&nbsp; "
         "<span style='color:#F4B183'>■</span> Shared Subject Area &nbsp;|&nbsp; "
         "<span style='color:#D9D9D9'>■</span> Other"
-        "</span>",
+        "</span>"
+        "<br><span style='font-size:13px; color:#aaaaaa'>Node size = number of shared subjects &nbsp;|&nbsp; Line thickness = collaboration strength</span>",
         unsafe_allow_html=True,
     )
 
