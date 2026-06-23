@@ -1,5 +1,6 @@
 import json
 import re
+from io import BytesIO
 import anthropic
 import pandas as pd
 import streamlit as st
@@ -7,6 +8,8 @@ import streamlit.components.v1 as components
 from pyvis.network import Network
 from snowflake.snowpark import Session
 import networkx as nx
+from docx import Document
+from docx.shared import Pt, RGBColor, Inches
 
 
 # -----------------------------
@@ -910,6 +913,81 @@ def inject_png_download(html: str, filename: str = "graph.png") -> str:
     return html.replace("</body>", button_js + "</body>")
 
 
+def _add_mixed_run(paragraph, text: str):
+    """Add text to a paragraph, rendering **bold** markdown segments as bold runs."""
+    for i, part in enumerate(re.split(r'(\*\*[^*]+\*\*)', text)):
+        run = paragraph.add_run(re.sub(r'\*\*', '', part))
+        if part.startswith("**") and part.endswith("**"):
+            run.bold = True
+
+
+def build_recommendation_docx(rec_text: str, institution: str, subject_filter: str = None) -> bytes:
+    """Convert the AI recommendation markdown text into a formatted .docx file."""
+    doc = Document()
+    for sec in doc.sections:
+        sec.top_margin = Inches(1)
+        sec.bottom_margin = Inches(1)
+        sec.left_margin = Inches(1.2)
+        sec.right_margin = Inches(1.2)
+
+    subject_context = f" — {subject_filter.title()}" if subject_filter else ""
+
+    title_para = doc.add_paragraph()
+    tr = title_para.add_run("Research Collaboration Recommendations")
+    tr.bold = True
+    tr.font.size = Pt(18)
+    tr.font.color.rgb = RGBColor(0x1F, 0x49, 0x7D)
+
+    sub_para = doc.add_paragraph()
+    sr = sub_para.add_run(f"{institution.title()}{subject_context}")
+    sr.font.size = Pt(12)
+    sr.font.color.rgb = RGBColor(0x60, 0x60, 0x60)
+
+    doc.add_paragraph()
+
+    blocks = [b.strip() for b in rec_text.split("---") if b.strip()]
+    for idx, block in enumerate(blocks):
+        for line in block.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+
+            # Org heading: **N. Name** — 🆕/🤝 tier
+            if re.match(r'^\*\*.+\*\*\s*[—–]', line) and ("🆕" in line or "🤝" in line):
+                p = doc.add_paragraph()
+                run = p.add_run(re.sub(r'\*\*', '', line))
+                run.bold = True
+                run.font.size = Pt(13)
+                run.font.color.rgb = RGBColor(0x1F, 0x49, 0x7D)
+
+            # Bullet point
+            elif line.startswith("- "):
+                p = doc.add_paragraph(style="List Bullet")
+                _add_mixed_run(p, line[2:])
+
+            # Section label: **Label:** optional inline content
+            elif re.match(r'^\*\*[^*]+:\*\*', line):
+                m = re.match(r'^\*\*([^*]+):\*\*\s*(.*)', line)
+                if m:
+                    p = doc.add_paragraph()
+                    lr = p.add_run(f"{m.group(1)}: ")
+                    lr.bold = True
+                    lr.font.color.rgb = RGBColor(0x1F, 0x49, 0x7D)
+                    if m.group(2):
+                        p.add_run(m.group(2))
+
+            else:
+                p = doc.add_paragraph()
+                _add_mixed_run(p, line)
+
+        if idx < len(blocks) - 1:
+            doc.add_paragraph()
+
+    buf = BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
 def build_pyvis_graph(df: pd.DataFrame, highlight_term: str = None) -> str:
     net = Network(
         height="750px",
@@ -1016,9 +1094,14 @@ Return a JSON object with the following fields:
                                         // "graph_query"    — user wants to filter or explore the graph
                                         // "general_answer" — user wants information about a company, institution, topic, or concept
                                         // "recommendation" — user wants recommended partners/collaborators for an institution
-                                        //   Use this when user says things like: "recommend", "who should NUS partner with",
-                                        //   "find industry partners", "suggest collaborators", "best partners for",
-                                        //   "highly likely to be partners", "who to approach"
+                                        //   DEFAULT for any query about finding, showing, or listing industry partners.
+                                        //   Use this when the user mentions "industry partners", "partners", "collaborators",
+                                        //   "partner for", "partners in", "partners for", "show partners", "find partners",
+                                        //   "recommend", "suggest", "who should NUS partner with", "best partners for",
+                                        //   "highly likely to be partners", "who to approach".
+                                        //   Only use "graph_query" instead if the user explicitly asks to see the network,
+                                        //   graph, connections, or visualisation (e.g. "show the network", "show connections",
+                                        //   "show the graph", "visualise", "map the relationships").
   "answer": "<string or null>",         // ONLY for general_answer: a helpful, concise answer (2-4 paragraphs).
                                         // Include: what the org does, their main research/business areas,
                                         // why they might be a good collaboration partner, and any notable facts.
@@ -1397,18 +1480,18 @@ with graph_col:
 
             st.subheader("📋 Summary table")
             summary_df = recs_df[[
-                "ORG_NAME", "ORG_CATEGORY",
+                "ORG_NAME",
+                "IS_NEW_OPPORTUNITY", "COLLAB_COUNT",
                 "PATENT_SHARED_SUBJECTS", "PATENT_STRENGTH",
                 "PUB_SHARED_SUBJECTS", "PUB_STRENGTH",
                 "TOTAL_SHARED_SUBJECTS", "TOTAL_STRENGTH",
-                "IS_NEW_OPPORTUNITY", "COLLAB_COUNT",
             ]].copy()
             summary_df.columns = [
-                "Organisation", "Category",
+                "Organisation",
+                "New Opportunity", "Existing Collaborations",
                 "Patent Shared Subjects", "Patent Count",
                 "Publication Shared Subjects", "Publication Count",
                 "Total Shared Subjects", "Total Count",
-                "New Opportunity", "Existing Collaborations",
             ]
             # Only show collaboration count for existing partners
             summary_df["Existing Collaborations"] = summary_df.apply(
@@ -1429,11 +1512,12 @@ with graph_col:
             with col2:
                 rec_text = rec_data.get("rec_text", "")
                 if rec_text:
+                    docx_bytes = build_recommendation_docx(rec_text, institution, subject_filter)
                     st.download_button(
                         label="⬇️ Download Report",
-                        data=rec_text.encode("utf-8"),
-                        file_name="recommendations_report.txt",
-                        mime="text/plain",
+                        data=docx_bytes,
+                        file_name="recommendations_report.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     )
 
     elif query_mode == "similar_no_collab":
