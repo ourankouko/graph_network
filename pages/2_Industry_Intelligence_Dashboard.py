@@ -44,8 +44,10 @@ CHART_COLS = [NUS_BLUE, NUS_ORANGE, NUS_LBLUE, NUS_GOLD,
 # ── GLOBAL STYLES ─────────────────────────────────────────────────────────────
 st.markdown(f"""
 <style>
+/* ----- hide sidebar page nav (top buttons handle navigation) ----- */
+[data-testid="stSidebarNav"] {{ display:none !important; }}
+
 /* ----- base ----- */
-[data-testid="stAppViewContainer"]  {{ background:{OFFWHITE}; }}
 html, body, [class*="css"]          {{ font-size:15px; }}
 
 /* ----- sidebar ----- */
@@ -142,6 +144,45 @@ section[data-testid="stSidebar"] button:hover {{
 }}
 .llm-q   {{ font-size:14px; font-weight:700; color:{NUS_BLUE}; margin-bottom:0.4rem; }}
 .llm-err {{ font-size:14px; color:{RED}; }}
+
+/* ----- dark mode overrides ----- */
+@media (prefers-color-scheme: dark) {{
+    .kpi-card {{
+        background:#1C2D3E;
+        box-shadow:0 2px 8px rgba(0,0,0,0.4);
+    }}
+    .kpi-val  {{ color:#B0CCE8; }}
+    .kpi-lbl  {{ color:#8AAAC4; }}
+    .kpi-sub  {{ color:#6A8A9E; }}
+
+    .exec-box {{
+        background:#1C2D3E;
+        box-shadow:0 2px 8px rgba(0,0,0,0.4);
+    }}
+    .exec-title {{ color:#B0CCE8; }}
+    .exec-body  {{ color:#A0B8CC; }}
+
+    .insight {{
+        background:#0A2A4A; border-left-color:#4A8FCC;
+        color:#B0CCE8;
+    }}
+    .warn-box {{
+        background:#2A1800; border-left-color:{NUS_ORANGE};
+        color:#F4B860;
+    }}
+    .alert-box {{
+        background:#2A0A0A; border-left-color:#CC4444;
+        color:#F4A0A0;
+    }}
+
+    .section-label {{ border-bottom-color:#2A4A6A; }}
+
+    .llm-panel {{
+        background:#1C2D3E; border-color:#2A4A6A;
+        box-shadow:0 2px 10px rgba(0,0,0,0.4);
+    }}
+    .llm-q {{ color:#B0CCE8; }}
+}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -359,13 +400,12 @@ ip_filter = "(" + ", ".join(f"'{t}'" for t in ip_types) + ")" if ip_types else "
 
 
 # ── PAGE NAVIGATION ──────────────────────────────────────────────────────────
-nav_col1, nav_col2, nav_spacer = st.columns([1, 1, 6])
+nav_col1, nav_col2, nav_spacer = st.columns([2, 2, 6])
 with nav_col1:
     if st.button("🔬 Research Collaboration Explorer", use_container_width=True):
         st.switch_page("pages/1_Research_Collaboration_Explorer.py")
 with nav_col2:
-    if st.button("📊 Industry Intelligence Dashboard", use_container_width=True):
-        st.switch_page("pages/2_Industry_Intelligence_Dashboard.py")
+    st.button("📊 Industry Intelligence Dashboard", disabled=True, use_container_width=True)
 
 # ── SINGAPORE BANNER ─────────────────────────────────────────────────────────
 st.markdown(

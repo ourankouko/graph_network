@@ -12,6 +12,12 @@ from docx import Document
 from docx.shared import Pt, RGBColor, Inches
 
 
+st.markdown("""
+<style>
+[data-testid="stSidebarNav"] { display:none !important; }
+</style>
+""", unsafe_allow_html=True)
+
 c1, c2, _ = st.columns([2, 2, 6])
 with c1:
     st.button("🔬 Research Collaboration Explorer", disabled=True, use_container_width=True)
