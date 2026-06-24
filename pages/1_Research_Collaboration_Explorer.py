@@ -1109,17 +1109,16 @@ Return a JSON object with the following fields:
 
 {
   "response_type": "<string>",          // REQUIRED. One of:
-                                        // "graph_query"    — user wants to filter or explore the graph
+                                        // "graph_query"    — user wants to filter or explore the graph, OR is asking which
+                                        //   partners ALREADY collaborate / have collaborated with an institution (i.e. existing
+                                        //   actual collaborations). Use this for: "collaborate most", "most collaborations",
+                                        //   "top collaborators", "who works with", "who has worked with", "existing partners",
+                                        //   "show the network/graph/connections/visualisation".
                                         // "general_answer" — user wants information about an industry partner, institution, topic, or concept
-                                        // "recommendation" — user wants recommended partners/collaborators for an institution
-                                        //   DEFAULT for any query about finding, showing, or listing industry partners.
-                                        //   Use this when the user mentions "industry partners", "partners", "collaborators",
-                                        //   "partner for", "partners in", "partners for", "show partners", "find partners",
-                                        //   "recommend", "suggest", "who should NUS partner with", "best partners for",
-                                        //   "highly likely to be partners", "who to approach".
-                                        //   Only use "graph_query" instead if the user explicitly asks to see the network,
-                                        //   graph, connections, or visualisation (e.g. "show the network", "show connections",
-                                        //   "show the graph", "visualise", "map the relationships").
+                                        // "recommendation" — user wants POTENTIAL or SUGGESTED partners (may not have collaborated yet).
+                                        //   Use this ONLY when the user says "recommend", "suggest", "who should partner",
+                                        //   "best partners for", "find partners", "who to approach", "potential partners".
+                                        //   Do NOT use this when the user asks who already collaborates or collaborates most.
   "answer": "<string or null>",         // ONLY for general_answer: a helpful, concise answer (2-4 paragraphs).
                                         // Include: what the org does, their main research/business areas,
                                         // why they might be a good collaboration partner, and any notable facts.
@@ -1156,6 +1155,7 @@ Rules:
 - For "general_answer": fill "answer" with a helpful response, set all filter fields to null.
 - For "graph_query": fill filter fields as needed, set "answer" to null.
 - query_mode defaults to "standard" for graph_query unless user clearly wants "similar_no_collab".
+- "recommendation" is for POTENTIAL partners (may or may not have collaborated). NEVER use it when the user asks who already collaborates or collaborates most — use "graph_query" instead.
 - ip_type must exactly match one of: [AVAILABLE_IP_TYPES]
 - edge_type must exactly match one of: [AVAILABLE_EDGE_TYPES]
 - category must exactly match one of: [AVAILABLE_CATEGORIES]
@@ -1619,7 +1619,7 @@ with graph_col:
                 ]].copy()
                 display_df.columns = [
                     "Organisation", "Category",
-                    "Shared Subjects", "Alignment Score",
+                    "Shared Subjects", "Patents & Publications",
                     "Shared Subject Areas",
                 ]
                 display_df.index = range(1, len(display_df) + 1)
@@ -1665,6 +1665,24 @@ with graph_col:
                         f"🔵 Blue nodes = potential partners  "
                         f"🟠 Orange nodes = shared research subjects.  "
                         "Hover over any node or edge for details."
+                    )
+                    graph_csv_df = filter_similar_df[[
+                        "ORG_NAME", "ORG_CATEGORY",
+                        "SHARED_SUBJECTS", "TOTAL_WEIGHT",
+                        "SHARED_SUBJECT_NAMES",
+                    ]].copy()
+                    graph_csv_df.columns = [
+                        "Organisation", "Category",
+                        "Shared Subjects", "Patents & Publications",
+                        "Shared Subject Areas",
+                    ]
+                    graph_csv_df.index = range(1, len(graph_csv_df) + 1)
+                    st.download_button(
+                        label="⬇️ Download CSV",
+                        data=graph_csv_df.to_csv().encode("utf-8"),
+                        file_name="potential_partners_network.csv",
+                        mime="text/csv",
+                        key="dl_snc_graph",
                     )
 
     else:
