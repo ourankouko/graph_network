@@ -8,7 +8,7 @@ st.set_page_config(
 )
 
 pg = st.navigation([
-    st.Page("pages/1_Research_Collaboration_Explorer.py", title="Research Collaboration Explorer", icon="🔬"),
+    st.Page("pages/1_Research_Collaboration_Explorer.py", title="Potential Collaborator Finder", icon="🧲"),
     st.Page("pages/2_Industry_Intelligence_Dashboard.py", title="Industry Intelligence Dashboard", icon="📊"),
 ])
 pg.run()
