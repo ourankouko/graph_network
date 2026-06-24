@@ -425,7 +425,7 @@ ip_filter = "(" + ", ".join(f"'{t}'" for t in ip_types) + ")" if ip_types else "
 # ── PAGE NAVIGATION ──────────────────────────────────────────────────────────
 nav_col1, nav_col2, nav_spacer = st.columns([2, 2, 6])
 with nav_col1:
-    if st.button("🔬 Research Collaboration Explorer", use_container_width=True):
+    if st.button("🧲 Potential Collaborator Finder", use_container_width=True):
         st.switch_page("pages/1_Research_Collaboration_Explorer.py")
 with nav_col2:
     st.button("📊 Industry Intelligence Dashboard", disabled=True, use_container_width=True)

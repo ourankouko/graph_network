@@ -20,12 +20,12 @@ st.markdown("""
 
 c1, c2, _ = st.columns([2, 2, 6])
 with c1:
-    st.button("🔬 Research Collaboration Explorer", disabled=True, use_container_width=True)
+    st.button("🧲 Potential Collaborator Finder", disabled=True, use_container_width=True)
 with c2:
     if st.button("📊 Industry Intelligence Dashboard", use_container_width=True):
         st.switch_page("pages/2_Industry_Intelligence_Dashboard.py")
 
-st.title("🔬 Research Collaboration Explorer")
+st.title("🧲 Potential Collaborator Finder")
 st.write("Discover institutions and corporations with shared research interests for potential collaboration.")
 
 
@@ -1418,7 +1418,7 @@ with graph_col:
 
     if not has_queried:
         st.info(
-            "👋 **Welcome to the Research Collaboration Explorer!**\n\n"
+            "👋 **Welcome to the Potential Collaborator Finder!**\n\n"
             "Use the AI assistant on the left to get started. Here are some things you can ask:\n\n"
             "- _'Recommend industry partners for NUS in computer science'_\n"
             "- _'Show NUS patent partners in engineering'_\n"
