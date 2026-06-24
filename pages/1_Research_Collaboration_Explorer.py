@@ -16,7 +16,10 @@ st.markdown("""
 <style>
 [data-testid="stSidebarNav"] { display:none !important; }
 [data-testid="stAppViewFooter"] { display:none !important; }
-.viewerBadge_container__r5tak { display:none !important; }
+[data-testid="stToolbar"]      { display:none !important; }
+.viewerBadge_container__r5tak  { display:none !important; }
+.viewerBadge_link__qRIco       { display:none !important; }
+footer                         { display:none !important; }
 </style>
 """, unsafe_allow_html=True)
 

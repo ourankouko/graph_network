@@ -48,7 +48,10 @@ st.markdown(f"""
 [data-testid="stSidebarNav"]     {{ display:none !important; }}
 /* ----- hide Streamlit viewer badge / profile link ----- */
 [data-testid="stAppViewFooter"]  {{ display:none !important; }}
-.viewerBadge_container__r5tak   {{ display:none !important; }}
+[data-testid="stToolbar"]        {{ display:none !important; }}
+.viewerBadge_container__r5tak    {{ display:none !important; }}
+.viewerBadge_link__qRIco         {{ display:none !important; }}
+footer                           {{ display:none !important; }}
 
 /* ----- base ----- */
 html, body, [class*="css"]          {{ font-size:15px; }}
