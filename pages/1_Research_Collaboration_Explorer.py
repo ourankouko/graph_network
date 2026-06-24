@@ -597,7 +597,7 @@ Format each recommendation exactly as follows (use markdown):
 
     response = client.messages.create(
         model="claude-sonnet-4-5",
-        max_tokens=2000,
+        max_tokens=min(8000, 500 + len(recs_df) * 400),
         messages=[{"role": "user", "content": prompt}],
     )
     return response.content[0].text.strip()
@@ -1766,6 +1766,7 @@ if submitted and user_input.strip():
 
             elif response_type == "recommendation":
                 # --- Recommendation mode — fetch data, generate written recs ---
+                WRITE_UP_LIMIT = 10  # max orgs with detailed AI write-ups
                 search_term_val = parsed.get("search_term", "NATIONAL UNIVERSITY OF SINGAPORE") or "NATIONAL UNIVERSITY OF SINGAPORE"
                 subject_val = parsed.get("subject_filter")
                 # Only use category if explicitly specified by user, otherwise show all
@@ -1783,21 +1784,32 @@ if submitted and user_input.strip():
                 if recs_df.empty:
                     answer = "No matching organisations found. Try broadening the subject area or category."
                 else:
-                    org_ids = recs_df["ORG_ID"].tolist()
+                    # Write-ups capped at WRITE_UP_LIMIT; summary table shows all rows
+                    write_up_df = recs_df.head(WRITE_UP_LIMIT)
+                    write_up_ids = write_up_df["ORG_ID"].tolist()
+
                     with st.spinner("Fetching relevant titles…"):
                         titles_df = run_titles_for_orgs(
                             institution=search_term_val,
-                            org_ids=org_ids,
+                            org_ids=write_up_ids,
                             subject_filter=subject_val,
                         )
 
                     with st.spinner("Generating recommendations…"):
                         rec_text = generate_recommendations(
-                            recs_df,
+                            write_up_df,
                             search_term_val,
                             subject_val,
                             titles_df=titles_df,
                         )
+
+                    if len(recs_df) > WRITE_UP_LIMIT:
+                        note = (
+                            f"_Detailed write-ups are shown for the **top {len(write_up_df)}** of "
+                            f"**{len(recs_df)}** recommended partners. "
+                            f"See the summary table below for the full ranked list._\n\n---\n\n"
+                        )
+                        rec_text = note + rec_text
 
                     # Store recommendation data for graph rendering
                     st.session_state.filter_state["recommendation_data"] = {
