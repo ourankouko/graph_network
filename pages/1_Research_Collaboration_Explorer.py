@@ -558,9 +558,9 @@ def generate_recommendations(
 
         rows.append(
             f"- {row['ORG_NAME']} ({row['ORG_CATEGORY']}) [{tier}]\n"
-            f"  Patents: {int(row['PATENT_SHARED_SUBJECTS'])} shared subjects, strength {int(row['PATENT_STRENGTH'])}\n"
-            f"  Publications: {int(row['PUB_SHARED_SUBJECTS'])} shared subjects, strength {int(row['PUB_STRENGTH'])}\n"
-            f"  Shared subjects: {row['SHARED_SUBJECT_NAMES']}\n"
+            f"  Patents: {int(row['PATENT_SHARED_SUBJECTS'])} overlapping subject area(s), research alignment score {int(row['PATENT_STRENGTH'])} (higher = stronger topical overlap, NOT a co-filing count)\n"
+            f"  Publications: {int(row['PUB_SHARED_SUBJECTS'])} overlapping subject area(s), research alignment score {int(row['PUB_STRENGTH'])}\n"
+            f"  Shared subject areas: {row['SHARED_SUBJECT_NAMES']}\n"
             f"{title_lines}"
         )
     data_str = "\n".join(rows)
@@ -570,8 +570,12 @@ def generate_recommendations(
 
 Based on the data below, write structured recommendations for the top {len(recs_df)} industry partners for {institution}{subject_context}.
 
-Use the tier labels exactly as shown (🆕 New Opportunity or 🤝 Existing Partner).
-Be specific and data-driven. Reference actual titles where relevant.
+CRITICAL DEFINITIONS — read carefully before writing:
+- "Research alignment score" is a topical overlap measure (how much research volume each party has in shared subject areas). It is NOT a count of co-authored papers or co-filed patents.
+- 🆕 New Opportunity = this organisation has NO prior direct collaboration with {institution}. Do NOT imply any existing co-authorship or co-filing. Frame the overlap purely as shared research territory and unexplored potential.
+- 🤝 Existing Partner = this organisation has already collaborated directly with {institution}. You may reference the depth of the existing relationship.
+
+Use the tier labels exactly as shown. Be specific and data-driven. Reference actual titles where relevant.
 Write in a professional but accessible tone for senior stakeholders.
 Do NOT add any title or heading before the recommendations. Start directly with the first --- divider.
 Use only **bold** for emphasis — do not use # or ## headings anywhere in your response.
@@ -586,13 +590,13 @@ Format each recommendation exactly as follows (use markdown):
 
 **About:** 1-2 sentences on what the organisation does and their research focus, citing specific patent/publication titles as evidence.
 
-**Overlap with {institution}:**
-- Patents: [X shared subjects, strength Y] — note key overlapping topics
-- Publications: [X shared subjects, strength Y] — note key overlapping topics
+**Research alignment with {institution}:**
+- Patents: [X overlapping subject area(s), alignment score Y] — describe the shared research territory
+- Publications: [X overlapping subject area(s), alignment score Y] — describe the shared research territory
 
-**Why collaborate:** 1-2 sentences on why they are a strong candidate, referencing the nature of the overlap and any strategic angle.
+**Why collaborate:** 1-2 sentences on the strategic rationale, framed appropriately for the tier (new opportunity = unexplored potential; existing partner = deepen or expand).
 
-**Strategic note:** One sentence on what the tier label means in practice (new opportunity = untapped; existing partner = deepen).
+**Strategic note:** One sentence on the specific next step or opportunity this partner represents.
 """
 
     response = client.messages.create(
@@ -1594,28 +1598,73 @@ with graph_col:
                         subject_filter=subject_filter,
                     )
 
-                html = build_similar_no_collab_graph(similar_df, edges_df)
-                html = inject_layout_controls(inject_png_download(html, filename="potential_partners.png"))
-                components.html(html, height=780, scrolling=True)
-                st.caption(
-                    f"🔵 Blue nodes = potential partners ({len(similar_df)})  "
-                    f"🟠 Orange nodes = shared research subjects.  "
-                    "Hover over any node or edge for details."
+                # Derive shared subject names from edges and merge into similar_df
+                if not edges_df.empty:
+                    subj_names = (
+                        edges_df.groupby("ORG_ID")["SUBJECT_NAME"]
+                        .apply(lambda x: ", ".join(sorted(x.dropna().unique())))
+                        .reset_index()
+                        .rename(columns={"SUBJECT_NAME": "SHARED_SUBJECT_NAMES"})
+                    )
+                    similar_df = similar_df.merge(subj_names, on="ORG_ID", how="left")
+                else:
+                    similar_df["SHARED_SUBJECT_NAMES"] = ""
+
+                # ── SUMMARY TABLE ─────────────────────────────────────────────
+                st.subheader("📋 Ranked results")
+                display_df = similar_df[[
+                    "ORG_NAME", "ORG_CATEGORY",
+                    "SHARED_SUBJECTS", "TOTAL_WEIGHT",
+                    "SHARED_SUBJECT_NAMES",
+                ]].copy()
+                display_df.columns = [
+                    "Organisation", "Category",
+                    "Shared Subjects", "Alignment Score",
+                    "Shared Subject Areas",
+                ]
+                display_df.index = range(1, len(display_df) + 1)
+
+                st.caption("Click a row to view that organisation's subject network.")
+                sel = st.dataframe(
+                    display_df,
+                    on_select="rerun",
+                    selection_mode="single-row",
+                    use_container_width=True,
                 )
 
-                st.subheader("📋 Ranked results")
-                display_df = similar_df[["ORG_NAME", "ORG_CATEGORY", "SHARED_SUBJECTS", "TOTAL_WEIGHT"]].copy()
-                display_df.columns = ["Organisation", "Category", "Shared Subjects", "Collaboration Strength"]
-                display_df.index = range(1, len(display_df) + 1)
-                st.dataframe(display_df, use_container_width=True)
+                st.download_button(
+                    label="⬇️ Download CSV",
+                    data=display_df.to_csv().encode("utf-8"),
+                    file_name="potential_partners.csv",
+                    mime="text/csv",
+                )
 
-                col1, col2 = st.columns([1, 5])
-                with col1:
-                    st.download_button(
-                        label="⬇️ Download CSV",
-                        data=display_df.to_csv().encode("utf-8"),
-                        file_name="potential_partners.csv",
-                        mime="text/csv",
+                # ── SELECTED ROW → FILTER GRAPH ───────────────────────────────
+                selected_snc_name = None
+                if sel.selection.rows:
+                    idx = sel.selection.rows[0]
+                    selected_row = similar_df.iloc[idx]
+                    selected_snc_id = str(selected_row["ORG_ID"])
+                    selected_snc_name = str(selected_row["ORG_NAME"])
+                    filter_similar_df = similar_df[similar_df["ORG_ID"].astype(str) == selected_snc_id]
+                    filter_edges_df = edges_df[edges_df["ORG_ID"].astype(str) == selected_snc_id]
+                else:
+                    filter_similar_df = similar_df
+                    filter_edges_df = edges_df
+
+                # ── GRAPH (expander, auto-opens when a row is selected) ────────
+                graph_label = (
+                    f"🔵 Subject network — {selected_snc_name}"
+                    if selected_snc_name else "🔵 View subject network (all organisations)"
+                )
+                with st.expander(graph_label, expanded=selected_snc_name is not None):
+                    html = build_similar_no_collab_graph(filter_similar_df, filter_edges_df)
+                    html = inject_layout_controls(inject_png_download(html, filename="potential_partners.png"))
+                    components.html(html, height=780, scrolling=True)
+                    st.caption(
+                        f"🔵 Blue nodes = potential partners  "
+                        f"🟠 Orange nodes = shared research subjects.  "
+                        "Hover over any node or edge for details."
                     )
 
     else:
