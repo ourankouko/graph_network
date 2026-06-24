@@ -1707,11 +1707,17 @@ LIMIT {max_edges}
 
 with chat_col:
     st.subheader("💬 AI Research Assistant")
-    st.caption(
-        "Ask in plain language to explore the network. Try: "
-        "_'Recommend industry partners for NUS in computer science'_ or "
-        "_'Show NUS patent partners in engineering'_"
-    )
+    st.caption("Ask in plain language — or click an example to get started:")
+    _CHAT_EXAMPLES = [
+        "Recommend top 5 industry partners for NUS in AI",
+        "Show NUS patent partners in biomedical engineering",
+        "Which companies collaborate most with NUS in computer science?",
+    ]
+    _ex_cols = st.columns(len(_CHAT_EXAMPLES))
+    for _i, _ex in enumerate(_CHAT_EXAMPLES):
+        with _ex_cols[_i]:
+            if st.button(_ex, key=f"chat_ex_{_i}", use_container_width=True):
+                st.session_state["pending_chat_q"] = _ex
 
     chat_container = st.container(height=400)
     with chat_container:
@@ -1736,6 +1742,11 @@ with chat_col:
             )
         with col2:
             submitted = st.form_submit_button("Send ➤", use_container_width=True)
+
+_pending_chat = st.session_state.pop("pending_chat_q", None)
+if _pending_chat:
+    user_input = _pending_chat
+    submitted = True
 
 if submitted and user_input.strip():
     st.session_state.chat_display.append({"role": "user", "content": user_input})

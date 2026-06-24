@@ -375,7 +375,6 @@ with st.sidebar:
                                  label_visibility="collapsed")
 
     EXAMPLES = [
-        "Top 10 industry partners in NUS patents",
         "NUS publication count by domain per year",
         "Which units have the most industry co-publications?",
         "Compare Data Science vs Medicine patent trends",
@@ -466,13 +465,30 @@ if "llm_result" in st.session_state:
 
             if num_cols and str_cols and rows <= 50:
                 try:
-                    af = px.bar(df_r.head(25), x=num_cols[0], y=str_cols[0],
-                                orientation="h",
-                                color_discrete_sequence=[NUS_BLUE],
-                                labels={num_cols[0]:"", str_cols[0]:""})
-                    af.update_layout(yaxis=dict(autorange="reversed"))
-                    st.plotly_chart(clean_fig(af, min(320, 60 + rows*26)),
-                                    use_container_width=True)
+                    year_cols   = [c for c in num_cols
+                                   if df_r[c].dropna().between(1990, 2030).all()
+                                   and df_r[c].nunique() <= 15]
+                    metric_cols = [c for c in num_cols if c not in year_cols]
+                    if metric_cols:
+                        mc = metric_cols[0]
+                        if year_cols:
+                            # time-series: grouped bar by year, colour per category
+                            af = px.bar(df_r, x=year_cols[0], y=mc,
+                                        color=str_cols[0],
+                                        barmode="group",
+                                        color_discrete_sequence=CHART_COLS,
+                                        labels={mc:"", year_cols[0]:"Year", str_cols[0]:""})
+                        else:
+                            # aggregate totals per category → horizontal bar
+                            agg = (df_r.groupby(str_cols[0])[mc].sum()
+                                   .reset_index().sort_values(mc, ascending=False))
+                            af = px.bar(agg.head(25), x=mc, y=str_cols[0],
+                                        orientation="h",
+                                        color_discrete_sequence=[NUS_BLUE],
+                                        labels={mc:"", str_cols[0]:""})
+                            af.update_layout(yaxis=dict(autorange="reversed"))
+                        st.plotly_chart(clean_fig(af, min(380, 80 + rows*26)),
+                                        use_container_width=True)
                 except Exception:
                     pass
 
