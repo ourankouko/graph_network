@@ -1421,7 +1421,6 @@ with graph_col:
             "👋 **Welcome to the Potential Collaborator Finder!**\n\n"
             "Use the AI assistant on the left to get started. Here are some things you can ask:\n\n"
             "- _'Recommend industry partners for NUS in computer science'_\n"
-            "- _'Show NUS patent partners in engineering'_\n"
             "- _'Show corporations with similar research interests to NUS that haven\\'t collaborated before'_\n\n"
             "Or use the manual filters in the sidebar."
         )
