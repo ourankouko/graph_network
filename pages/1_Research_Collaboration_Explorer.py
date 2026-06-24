@@ -14,32 +14,8 @@ from docx.shared import Pt, RGBColor, Inches
 
 st.markdown("""
 <style>
-[data-testid="stSidebarNav"]              { display:none !important; }
-[data-testid="stAppViewFooter"]           { display:none !important; }
-[data-testid="stToolbar"]                 { display:none !important; }
-[data-testid="appCreatorAvatar"]          { display:none !important; }
-div:has([data-testid="appCreatorAvatar"]) { display:none !important; }
-.viewerBadge_container__r5tak            { display:none !important; }
-footer                                   { display:none !important; }
+[data-testid="stSidebarNav"] { display:none !important; }
 </style>
-<script>
-(function() {
-    function hideCreatorBadge() {
-        const avatar = document.querySelector('[data-testid="appCreatorAvatar"]');
-        if (!avatar) return;
-        let node = avatar.parentElement;
-        while (node && node !== document.body) {
-            if (String(node.className).includes('profileContainer')) {
-                node.style.display = 'none';
-                return;
-            }
-            node = node.parentElement;
-        }
-    }
-    hideCreatorBadge();
-    new MutationObserver(hideCreatorBadge).observe(document.body, { childList: true, subtree: true });
-})();
-</script>
 """, unsafe_allow_html=True)
 
 c1, c2, _ = st.columns([2, 2, 6])

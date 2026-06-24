@@ -46,13 +46,6 @@ st.markdown(f"""
 <style>
 /* ----- hide sidebar page nav (top buttons handle navigation) ----- */
 [data-testid="stSidebarNav"]     {{ display:none !important; }}
-/* ----- hide Streamlit viewer badge / profile link ----- */
-[data-testid="stAppViewFooter"]              {{ display:none !important; }}
-[data-testid="stToolbar"]                    {{ display:none !important; }}
-[data-testid="appCreatorAvatar"]             {{ display:none !important; }}
-div:has([data-testid="appCreatorAvatar"])    {{ display:none !important; }}
-.viewerBadge_container__r5tak               {{ display:none !important; }}
-footer                                      {{ display:none !important; }}
 
 /* ----- base ----- */
 html, body, [class*="css"]          {{ font-size:15px; }}
@@ -197,24 +190,6 @@ section[data-testid="stSidebar"] button:hover {{
     .llm-q {{ color:#B0CCE8; }}
 }}
 </style>
-<script>
-(function() {{
-    function hideCreatorBadge() {{
-        const avatar = document.querySelector('[data-testid="appCreatorAvatar"]');
-        if (!avatar) return;
-        let node = avatar.parentElement;
-        while (node && node !== document.body) {{
-            if (String(node.className).includes('profileContainer')) {{
-                node.style.display = 'none';
-                return;
-            }}
-            node = node.parentElement;
-        }}
-    }}
-    hideCreatorBadge();
-    new MutationObserver(hideCreatorBadge).observe(document.body, {{ childList: true, subtree: true }});
-}})();
-</script>
 """, unsafe_allow_html=True)
 
 
