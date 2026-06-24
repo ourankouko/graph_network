@@ -45,7 +45,10 @@ CHART_COLS = [NUS_BLUE, NUS_ORANGE, NUS_LBLUE, NUS_GOLD,
 st.markdown(f"""
 <style>
 /* ----- hide sidebar page nav (top buttons handle navigation) ----- */
-[data-testid="stSidebarNav"] {{ display:none !important; }}
+[data-testid="stSidebarNav"]     {{ display:none !important; }}
+/* ----- hide Streamlit viewer badge / profile link ----- */
+[data-testid="stAppViewFooter"]  {{ display:none !important; }}
+.viewerBadge_container__r5tak   {{ display:none !important; }}
 
 /* ----- base ----- */
 html, body, [class*="css"]          {{ font-size:15px; }}
