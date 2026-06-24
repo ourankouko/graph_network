@@ -276,7 +276,7 @@ LIMIT {top_n}
 def run_recommendation_query(
     institution: str,
     subject_filter: str = None,
-    category: str = "Corporation",
+    category: str = None,
     top_n: int = 3,
 ) -> pd.DataFrame:
     """
@@ -1109,16 +1109,13 @@ Return a JSON object with the following fields:
 
 {
   "response_type": "<string>",          // REQUIRED. One of:
-                                        // "graph_query"    — user wants to filter or explore the graph, OR is asking which
-                                        //   partners ALREADY collaborate / have collaborated with an institution (i.e. existing
-                                        //   actual collaborations). Use this for: "collaborate most", "most collaborations",
-                                        //   "top collaborators", "who works with", "who has worked with", "existing partners",
-                                        //   "show the network/graph/connections/visualisation".
+                                        // "graph_query"    — user wants to filter or explore the graph network visually
+                                        //   (e.g. "show the network", "show connections", "show the graph", "visualise").
                                         // "general_answer" — user wants information about an industry partner, institution, topic, or concept
-                                        // "recommendation" — user wants POTENTIAL or SUGGESTED partners (may not have collaborated yet).
-                                        //   Use this ONLY when the user says "recommend", "suggest", "who should partner",
-                                        //   "best partners for", "find partners", "who to approach", "potential partners".
-                                        //   Do NOT use this when the user asks who already collaborates or collaborates most.
+                                        // "recommendation" — user wants a ranked list of partners for an institution.
+                                        //   Use this for BOTH existing collaborators AND potential new ones.
+                                        //   Set existing_only=true if user asks who already collaborates or collaborates most.
+                                        //   Set existing_only=false if user asks for recommendations, suggestions, or potential partners.
   "answer": "<string or null>",         // ONLY for general_answer: a helpful, concise answer (2-4 paragraphs).
                                         // Include: what the org does, their main research/business areas,
                                         // why they might be a good collaboration partner, and any notable facts.
@@ -1134,6 +1131,8 @@ Return a JSON object with the following fields:
                                         // Institution_Institution = publication co-authors
   "search_term": "<string or null>",    // institution name to focus on, or null
   "category": "<string or null>",       // organisation category, or null for all. Available: [AVAILABLE_CATEGORIES]
+                                        // Leave null unless the user explicitly names a specific org type.
+                                        // Do NOT set "Corporation" just because the user says "industry partners" — leave null.
   "min_weight": <integer or null>,      // minimum collaboration strength, or null to keep current
   "max_edges": <integer or null>,       // max edges to load (20–1000), or null to keep current.
                                         // For "top N" requests: set max_edges=300 and top_n_nodes=N instead.
@@ -1147,6 +1146,9 @@ Return a JSON object with the following fields:
                                         //   "biomedical", "life sciences" → "BIOLOGICAL SCIENCES" or "MEDICINE"
                                         //   "engineering" → pick the most specific match e.g. "ENGINEERING - ELECTRICAL & ELECTRONIC"
                                         //   If ambiguous, pick the closest match or leave null for all subjects.
+  "existing_only": <boolean>,            // for "recommendation" mode only.
+                                        // true  = user wants EXISTING collaborators only ("collaborate most", "top collaborators", "who works with NUS")
+                                        // false = user wants potential/suggested partners ("recommend", "suggest", "potential partners")
   "explanation": "<friendly 1-2 sentence explanation of what the results will show, or null for general_answer. Always use 'industry partners' — never 'corporations', 'companies', or 'firms'.>"
 }
 
@@ -1155,7 +1157,6 @@ Rules:
 - For "general_answer": fill "answer" with a helpful response, set all filter fields to null.
 - For "graph_query": fill filter fields as needed, set "answer" to null.
 - query_mode defaults to "standard" for graph_query unless user clearly wants "similar_no_collab".
-- "recommendation" is for POTENTIAL partners (may or may not have collaborated). NEVER use it when the user asks who already collaborates or collaborates most — use "graph_query" instead.
 - ip_type must exactly match one of: [AVAILABLE_IP_TYPES]
 - edge_type must exactly match one of: [AVAILABLE_EDGE_TYPES]
 - category must exactly match one of: [AVAILABLE_CATEGORIES]
@@ -1434,10 +1435,14 @@ with graph_col:
             recs_df = pd.DataFrame(rec_data["recs_df"])
             institution = rec_data["institution"]
             subject_filter = rec_data.get("subject_filter")
+            existing_only = rec_data.get("existing_only", False)
             org_ids = recs_df["ORG_ID"].tolist()
 
             subject_context = f" in {subject_filter}" if subject_filter else ""
-            st.markdown(f"Recommended industry partners for **{institution.title()}**{subject_context}.")
+            if existing_only:
+                st.markdown(f"Top industry partners **actively collaborating** with **{institution.title()}**{subject_context}, ranked by collaboration count.")
+            else:
+                st.markdown(f"Recommended industry partners for **{institution.title()}**{subject_context}.")
 
             # ── SUMMARY TABLE (shown first; click a row to explore its network) ─
             st.subheader("📋 Summary")
@@ -1852,7 +1857,10 @@ if submitted and user_input.strip():
                 subject_val = parsed.get("subject_filter")
                 # Only use category if explicitly specified by user, otherwise show all
                 category_val = parsed.get("category") or None
-                top_n_val = int(parsed.get("top_n_results") or 3)
+                existing_only = bool(parsed.get("existing_only", False))
+                # existing_only queries expect more results by default (show the landscape)
+                default_n = 10 if existing_only else 3
+                top_n_val = int(parsed.get("top_n_results") or default_n)
 
                 with st.spinner("Fetching partner data from Snowflake…"):
                     recs_df = run_recommendation_query(
@@ -1861,6 +1869,11 @@ if submitted and user_input.strip():
                         category=category_val,
                         top_n=top_n_val,
                     )
+
+                # Filter to existing collaborators only if requested
+                if existing_only and not recs_df.empty:
+                    recs_df = recs_df[recs_df["IS_NEW_OPPORTUNITY"] == False].copy()
+                    recs_df = recs_df.sort_values("COLLAB_COUNT", ascending=False).reset_index(drop=True)
 
                 if recs_df.empty:
                     answer = "No matching organisations found. Try broadening the subject area or category."
@@ -1899,6 +1912,7 @@ if submitted and user_input.strip():
                         "subject_filter": subject_val,
                         "rec_text": rec_text,
                         "category": category_val,
+                        "existing_only": existing_only,
                     }
                     st.session_state.filter_state["has_queried"] = True
                     st.session_state.filter_state["query_mode"] = "recommendation"
