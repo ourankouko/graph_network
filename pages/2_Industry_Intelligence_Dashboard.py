@@ -145,8 +145,14 @@ section[data-testid="stSidebar"] button:hover {{
 .llm-q   {{ font-size:14px; font-weight:700; color:{NUS_BLUE}; margin-bottom:0.4rem; }}
 .llm-err {{ font-size:14px; color:{RED}; }}
 
+/* ----- page title / subtitle ----- */
+.page-title    {{ color:{NUS_BLUE}; margin:0 0 0.1rem; font-size:1.7rem; font-weight:700; line-height:1.2; }}
+.page-subtitle {{ color:{SLATE}; font-size:14px; margin:0; }}
+
 /* ----- dark mode overrides ----- */
 @media (prefers-color-scheme: dark) {{
+    .page-title    {{ color:#7BB3E0; }}
+    .page-subtitle {{ color:#8AAAC4; }}
     .kpi-card {{
         background:#1C2D3E;
         box-shadow:0 2px 8px rgba(0,0,0,0.4);
@@ -420,9 +426,8 @@ st.markdown(
 )
 
 st.markdown(
-    f"<h1 style='color:{NUS_BLUE};margin:0 0 0.1rem;font-size:1.7rem'>"
-    "SG Industry Collaboration Overview</h1>"
-    f"<p style='color:{SLATE};font-size:14px;margin:0'>NUS Research Strategy &nbsp;·&nbsp; "
+    "<h1 class='page-title'>SG Industry Collaboration Overview</h1>"
+    f"<p class='page-subtitle'>NUS Research Strategy &nbsp;·&nbsp; "
     f"{yr_min}–{yr_max} &nbsp;·&nbsp; {', '.join(ip_types) if ip_types else 'All IP types'}</p>",
     unsafe_allow_html=True,
 )
@@ -897,15 +902,24 @@ with t5:
                             ["All"] + unit_list, key="unit_sel")
     unit_where = f"AND CONTAINS(UNITS, '{unit_sel}')" if unit_sel != "All" else ""
 
-    u1, u2 = st.columns(2)
-
-    with u1:
+    # ── Row 1: insight boxes (own row so wrapping doesn't offset charts below) ──
+    ins1, ins2 = st.columns(2)
+    with ins1:
         section("What this tells us — unit engagement")
         insight("Units where the orange industry bar is a large fraction of the blue "
                 "total bar are already well-connected with industry. Units with high "
                 "total output but low industry overlay are under-commercialised — "
                 "prime targets for industry outreach programmes.")
+    with ins2:
+        section("What this tells us — unit trends")
+        insight("Units growing year-on-year are building momentum that makes them "
+                "more attractive to industry partners. A flat or declining trend "
+                "may indicate capacity constraints or shifting research priorities.")
 
+    # ── Row 2: charts (both columns start at the same height) ─────────────────
+    u1, u2 = st.columns(2)
+
+    with u1:
         section("Total output vs industry collaborations — by unit")
         uo = sql(f"""
             SELECT TRIM(f.VALUE::STRING) AS UNIT, IP_TYPE,
@@ -928,14 +942,9 @@ with t5:
             fig.update_layout(barmode="overlay",
                                yaxis=dict(autorange="reversed"),
                                legend=dict(font=dict(size=12)))
-            st.plotly_chart(clean_fig(fig,460), use_container_width=True)
+            st.plotly_chart(clean_fig(fig, 600), use_container_width=True)
 
     with u2:
-        section("What this tells us — unit trends")
-        insight("Units growing year-on-year are building momentum that makes them "
-                "more attractive to industry partners. A flat or declining trend "
-                "may indicate capacity constraints or shifting research priorities.")
-
         section("Unit activity trend by year")
         ut = sql(f"""
             SELECT APPLICATION_PUBLICATION_YEAR AS YEAR,
@@ -954,7 +963,7 @@ with t5:
                             labels={"CNT":"Records","YEAR":"Year","UNIT":""})
             fig2.update_layout(xaxis=dict(tickmode="linear",dtick=1),
                                 legend=dict(font=dict(size=12)))
-            st.plotly_chart(clean_fig(fig2,300), use_container_width=True)
+            st.plotly_chart(clean_fig(fig2, 270), use_container_width=True)
 
         section("Subject specialisation heatmap — unit vs domain")
         us = sql(f"""
@@ -981,7 +990,7 @@ with t5:
                                   color_continuous_scale=[[0,"rgba(0,61,124,0.08)"],[0.4,"#5B9FC8"],[1,NUS_BLUE]],
                                   labels=dict(color="Records"), aspect="auto")
                 fig3.update_layout(margin=dict(t=10,b=10,l=10,r=10),
-                                    paper_bgcolor="rgba(0,0,0,0)", height=320,
+                                    paper_bgcolor="rgba(0,0,0,0)", height=290,
                                     coloraxis_showscale=False,
                                     xaxis=dict(tickfont=dict(size=11)),
                                     yaxis=dict(tickfont=dict(size=11)))
