@@ -38,8 +38,18 @@ LIGHT      = "#D6E4F0"
 RED        = "#B03030"
 GREEN      = "#1A7A4A"
 AMBER      = "#C07000"
-CHART_COLS = [NUS_BLUE, NUS_ORANGE, NUS_LBLUE, NUS_GOLD,
-              "#1A7A4A", "#9B2335", "#5A3E8D", "#2C7873"]
+CHART_COLS = [
+    "#1f77b4",  # steel blue
+    "#ff7f0e",  # orange
+    "#2ca02c",  # green
+    "#d62728",  # red
+    "#9467bd",  # purple
+    "#17becf",  # cyan
+    "#e377c2",  # pink
+    "#bcbd22",  # olive
+    "#8c564b",  # brown
+    "#003D7C",  # NUS navy
+]
 
 # ── GLOBAL STYLES ─────────────────────────────────────────────────────────────
 st.markdown(f"""
@@ -916,24 +926,32 @@ with t5:
                 "more attractive to industry partners. A flat or declining trend "
                 "may indicate capacity constraints or shifting research priorities.")
 
-    # ── Row 2: charts (both columns start at the same height) ─────────────────
+    # ── Row 2: compute shared top-10 unit list, then render all 3 charts ────────
+    uo = sql(f"""
+        SELECT TRIM(f.VALUE::STRING) AS UNIT, IP_TYPE,
+               COUNT(*) AS TOTAL,
+               SUM(CASE WHEN N_CORPORATE>0 THEN 1 ELSE 0 END) AS IND
+        FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(UNITS,';;')) f
+        WHERE NUS_IP=TRUE AND UNITS IS NOT NULL AND UNITS<>''
+          AND APPLICATION_PUBLICATION_YEAR BETWEEN {yr_min} AND {yr_max}
+          {unit_where}
+        GROUP BY 1,2 ORDER BY TOTAL DESC LIMIT 40
+    """)
+    TOP_N = 10
+    top_units = (
+        uo.groupby("UNIT")[["TOTAL"]].sum()
+        .sort_values("TOTAL", ascending=False)
+        .head(TOP_N).index.tolist()
+        if not uo.empty else []
+    )
+
     u1, u2 = st.columns(2)
 
     with u1:
         section("Total output vs industry collaborations — by unit")
-        uo = sql(f"""
-            SELECT TRIM(f.VALUE::STRING) AS UNIT, IP_TYPE,
-                   COUNT(*) AS TOTAL,
-                   SUM(CASE WHEN N_CORPORATE>0 THEN 1 ELSE 0 END) AS IND
-            FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(UNITS,';;')) f
-            WHERE NUS_IP=TRUE AND UNITS IS NOT NULL AND UNITS<>''
-              AND APPLICATION_PUBLICATION_YEAR BETWEEN {yr_min} AND {yr_max}
-              {unit_where}
-            GROUP BY 1,2 ORDER BY TOTAL DESC LIMIT 40
-        """)
         if not uo.empty:
-            agg = uo.groupby("UNIT")[["TOTAL","IND"]].sum().reset_index() \
-                    .sort_values("TOTAL",ascending=False).head(15)
+            agg = uo[uo["UNIT"].isin(top_units)].groupby("UNIT")[["TOTAL","IND"]].sum().reset_index() \
+                    .sort_values("TOTAL", ascending=False)
             fig = go.Figure()
             fig.add_bar(name="Total Output", x=agg["TOTAL"], y=agg["UNIT"],
                         orientation="h", marker_color=NUS_BLUE)
@@ -942,7 +960,7 @@ with t5:
             fig.update_layout(barmode="overlay",
                                yaxis=dict(autorange="reversed"),
                                legend=dict(font=dict(size=12)))
-            st.plotly_chart(clean_fig(fig, 600), use_container_width=True)
+            st.plotly_chart(clean_fig(fig, 450), use_container_width=True)
 
     with u2:
         section("Unit activity trend by year")
@@ -956,44 +974,42 @@ with t5:
             GROUP BY 1,2 ORDER BY 1
         """)
         if not ut.empty:
-            top_u = ut.groupby("UNIT")["CNT"].sum().sort_values(ascending=False).head(8).index
-            fig2  = px.line(ut[ut["UNIT"].isin(top_u)],
+            fig2  = px.line(ut[ut["UNIT"].isin(top_units)],
                             x="YEAR", y="CNT", color="UNIT", markers=True,
                             color_discrete_sequence=CHART_COLS,
                             labels={"CNT":"Records","YEAR":"Year","UNIT":""})
             fig2.update_layout(xaxis=dict(tickmode="linear",dtick=1),
                                 legend=dict(font=dict(size=12)))
-            st.plotly_chart(clean_fig(fig2, 270), use_container_width=True)
+            st.plotly_chart(clean_fig(fig2, 450), use_container_width=True)
 
-        section("Subject specialisation heatmap — unit vs domain")
-        us = sql(f"""
-            SELECT TRIM(u.VALUE::STRING) AS UNIT,
-                   TRIM(s.VALUE::STRING) AS SUBJECT,
-                   COUNT(*) AS CNT
-            FROM {TBL},
-                 LATERAL FLATTEN(INPUT=>SPLIT(UNITS,';;')) u,
-                 LATERAL FLATTEN(INPUT=>SPLIT(QS_SUBJECT,'|')) s
-            WHERE NUS_IP=TRUE AND IP_TYPE='Publications'
-              AND UNITS IS NOT NULL AND UNITS<>''
-              AND APPLICATION_PUBLICATION_YEAR BETWEEN {yr_min} AND {yr_max}
-              {unit_where}
-              AND TRIM(u.VALUE::STRING)<>'' AND TRIM(s.VALUE::STRING)<>''
-            GROUP BY 1,2 ORDER BY CNT DESC LIMIT 100
-        """)
-        if not us.empty:
-            tu = us.groupby("UNIT")["CNT"].sum().sort_values(ascending=False).head(8).index
-            ts = us.groupby("SUBJECT")["CNT"].sum().sort_values(ascending=False).head(8).index
-            pv = (us[us["UNIT"].isin(tu) & us["SUBJECT"].isin(ts)]
-                  .pivot_table(index="SUBJECT", columns="UNIT", values="CNT", fill_value=0))
-            if not pv.empty:
-                fig3 = px.imshow(pv,
-                                  color_continuous_scale=[[0,"rgba(0,61,124,0.08)"],[0.4,"#5B9FC8"],[1,NUS_BLUE]],
-                                  labels=dict(color="Records"), aspect="auto")
-                fig3.update_layout(margin=dict(t=10,b=10,l=10,r=10),
-                                    paper_bgcolor="rgba(0,0,0,0)", height=290,
-                                    coloraxis_showscale=False,
-                                    xaxis=dict(tickfont=dict(size=11)),
-                                    yaxis=dict(tickfont=dict(size=11)))
-                st.plotly_chart(fig3, use_container_width=True)
-            insight("Darker cells = higher research output in that unit-subject pair. "
-                    "Use this to match the right NUS unit to the right industry partner by topic.")
+    section("Subject specialisation heatmap — unit vs domain")
+    us = sql(f"""
+        SELECT TRIM(u.VALUE::STRING) AS UNIT,
+               TRIM(s.VALUE::STRING) AS SUBJECT,
+               COUNT(*) AS CNT
+        FROM {TBL},
+             LATERAL FLATTEN(INPUT=>SPLIT(UNITS,';;')) u,
+             LATERAL FLATTEN(INPUT=>SPLIT(QS_SUBJECT,'|')) s
+        WHERE NUS_IP=TRUE AND IP_TYPE='Publications'
+          AND UNITS IS NOT NULL AND UNITS<>''
+          AND APPLICATION_PUBLICATION_YEAR BETWEEN {yr_min} AND {yr_max}
+          {unit_where}
+          AND TRIM(u.VALUE::STRING)<>'' AND TRIM(s.VALUE::STRING)<>''
+        GROUP BY 1,2 ORDER BY CNT DESC LIMIT 100
+    """)
+    if not us.empty:
+        ts = us.groupby("SUBJECT")["CNT"].sum().sort_values(ascending=False).head(8).index
+        pv = (us[us["UNIT"].isin(top_units) & us["SUBJECT"].isin(ts)]
+              .pivot_table(index="SUBJECT", columns="UNIT", values="CNT", fill_value=0))
+        if not pv.empty:
+            fig3 = px.imshow(pv,
+                              color_continuous_scale=[[0,"rgba(0,61,124,0.08)"],[0.4,"#5B9FC8"],[1,NUS_BLUE]],
+                              labels=dict(color="Records"), aspect="auto")
+            fig3.update_layout(margin=dict(t=10,b=10,l=10,r=10),
+                                paper_bgcolor="rgba(0,0,0,0)", height=320,
+                                coloraxis_showscale=False,
+                                xaxis=dict(tickfont=dict(size=11)),
+                                yaxis=dict(tickfont=dict(size=11)))
+            st.plotly_chart(fig3, use_container_width=True)
+        insight("Darker cells = higher research output in that unit-subject pair. "
+                "Use this to match the right NUS unit to the right industry partner by topic.")
