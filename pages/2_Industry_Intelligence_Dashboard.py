@@ -213,6 +213,7 @@ def get_conn():
         account=cfg["account"], user=cfg["user"], password=cfg["password"],
         database=cfg["database"], schema=cfg["schema"],
         warehouse=cfg["warehouse"], role=cfg["role"],
+        client_session_keep_alive=True,
     )
 
 @st.cache_data(ttl=3600, show_spinner="Loading data…")
@@ -220,8 +221,7 @@ def sql(query: str) -> pd.DataFrame:
     conn = get_conn()
     cur  = conn.cursor()
     cur.execute(query)
-    cols = [d[0] for d in cur.description]
-    return pd.DataFrame(cur.fetchall(), columns=cols)
+    return cur.fetch_pandas_all()
 
 TBL = (f"{st.secrets['snowflake_intel']['database']}."
        f"{st.secrets['snowflake_intel']['schema']}."

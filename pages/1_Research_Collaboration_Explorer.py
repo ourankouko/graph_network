@@ -603,6 +603,7 @@ Format each recommendation exactly as follows (use markdown):
     return response.content[0].text.strip()
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def build_recommendation_shared_subjects_graph(
     recs_df: pd.DataFrame,
     subject_edges_df: pd.DataFrame,
@@ -672,6 +673,7 @@ def build_recommendation_shared_subjects_graph(
     return net.generate_html(notebook=False)
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def build_recommendation_network_graph(
     recs_df: pd.DataFrame,
     collaborators_df: pd.DataFrame,
@@ -797,6 +799,7 @@ AND (SOURCE IN ({quoted_ids}) OR TARGET IN ({quoted_ids}))
     return run_query(sql)
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def build_similar_no_collab_graph(results_df: pd.DataFrame, edges_df: pd.DataFrame) -> str:
     """
     Build a bipartite graph: organisations (blue) on the left, shared subject areas (orange) on the right.
@@ -998,6 +1001,7 @@ def build_recommendation_docx(rec_text: str, institution: str, subject_filter: s
     return buf.getvalue()
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def build_pyvis_graph(df: pd.DataFrame, highlight_term: str = None) -> str:
     net = Network(
         height="750px",
@@ -1710,8 +1714,8 @@ with chat_col:
     st.caption("Ask in plain language — or click an example to get started:")
     _CHAT_EXAMPLES = [
         "Recommend top 5 industry partners for NUS in AI",
-        "Show NUS patent partners in biomedical engineering",
-        "Which companies collaborate most with NUS in computer science?",
+        "Show NUS collaborations in biomedical engineering",
+        "Which industry partners collaborate most with NUS in computer science?",
     ]
     _ex_cols = st.columns(len(_CHAT_EXAMPLES))
     for _i, _ex in enumerate(_CHAT_EXAMPLES):
