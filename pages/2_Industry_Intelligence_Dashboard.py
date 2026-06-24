@@ -197,6 +197,24 @@ section[data-testid="stSidebar"] button:hover {{
     .llm-q {{ color:#B0CCE8; }}
 }}
 </style>
+<script>
+(function() {{
+    function hideCreatorBadge() {{
+        const avatar = document.querySelector('[data-testid="appCreatorAvatar"]');
+        if (!avatar) return;
+        let node = avatar.parentElement;
+        while (node && node !== document.body) {{
+            if (String(node.className).includes('profileContainer')) {{
+                node.style.display = 'none';
+                return;
+            }}
+            node = node.parentElement;
+        }}
+    }}
+    hideCreatorBadge();
+    new MutationObserver(hideCreatorBadge).observe(document.body, {{ childList: true, subtree: true }});
+}})();
+</script>
 """, unsafe_allow_html=True)
 
 
