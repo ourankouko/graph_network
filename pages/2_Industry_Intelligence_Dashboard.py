@@ -310,6 +310,9 @@ RULES:
 4. Return ONLY the SQL — no markdown, no explanation.
 5. NEVER reference a SELECT alias in WHERE or HAVING — repeat the full expression.
 6. Use positional GROUP BY (GROUP BY 1, 2, 3) rather than alias names.
+7. LATERAL FLATTEN must appear directly in the top-level FROM clause — NEVER inside a subquery, CTE, or derived table. Write:
+   SELECT ... FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(col, 'sep')) f WHERE ...
+   NOT: SELECT ... FROM (SELECT ... FROM {TBL}, LATERAL FLATTEN(...) f) sub
 """
 
 def run_llm_query(question: str, api_key: str):
@@ -375,8 +378,8 @@ with st.sidebar:
                                  label_visibility="collapsed")
 
     EXAMPLES = [
-        "NUS publication count by domain per year",
-        "Which units have the most industry co-publications?",
+        "NUS vs industry patent count by year",
+        "Total NUS publications vs patents 2020–2024",
         "Compare Data Science vs Medicine patent trends",
     ]
     st.markdown(f"<div style='font-size:13px;color:{MUTED};margin:0.4rem 0 0.2rem'>Quick examples:</div>",

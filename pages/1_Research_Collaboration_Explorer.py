@@ -1099,14 +1099,14 @@ SYSTEM_PROMPT = """You are a research collaboration discovery assistant helping 
 
 Based on the user's natural language request, first decide if they are:
 A) Asking to filter/explore the graph network
-B) Asking a general question (about a company, institution, research topic, or concept)
+B) Asking a general question (about an industry partner, institution, research topic, or concept)
 
 Return a JSON object with the following fields:
 
 {
   "response_type": "<string>",          // REQUIRED. One of:
                                         // "graph_query"    — user wants to filter or explore the graph
-                                        // "general_answer" — user wants information about a company, institution, topic, or concept
+                                        // "general_answer" — user wants information about an industry partner, institution, topic, or concept
                                         // "recommendation" — user wants recommended partners/collaborators for an institution
                                         //   DEFAULT for any query about finding, showing, or listing industry partners.
                                         //   Use this when the user mentions "industry partners", "partners", "collaborators",
@@ -1144,7 +1144,7 @@ Return a JSON object with the following fields:
                                         //   "biomedical", "life sciences" → "BIOLOGICAL SCIENCES" or "MEDICINE"
                                         //   "engineering" → pick the most specific match e.g. "ENGINEERING - ELECTRICAL & ELECTRONIC"
                                         //   If ambiguous, pick the closest match or leave null for all subjects.
-  "explanation": "<friendly 1-2 sentence explanation of what the results will show, or null for general_answer>"
+  "explanation": "<friendly 1-2 sentence explanation of what the results will show, or null for general_answer. Always use 'industry partners' — never 'corporations', 'companies', or 'firms'.>"
 }
 
 Rules:
@@ -1714,8 +1714,7 @@ with chat_col:
     st.caption("Ask in plain language — or click an example to get started:")
     _CHAT_EXAMPLES = [
         "Recommend top 5 industry partners for NUS in AI",
-        "Show NUS collaborations in biomedical engineering",
-        "Which industry partners collaborate most with NUS in computer science?",
+        "Which industry partners collaborate most with NUS in semiconductors?",
     ]
     _ex_cols = st.columns(len(_CHAT_EXAMPLES))
     for _i, _ex in enumerate(_CHAT_EXAMPLES):
