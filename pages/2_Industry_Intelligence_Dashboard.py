@@ -300,12 +300,16 @@ KEY PATTERNS:
 - Split institutions:      LATERAL FLATTEN(INPUT=>SPLIT(NORMALIZED_NAMES_CONCAT,';;')) f
 - Split units:             LATERAL FLATTEN(INPUT=>SPLIT(UNITS,';;')) f
 - Exclude NUS itself:      NOT CONTAINS(UPPER(TRIM(f.VALUE::STRING)),'NATIONAL UNIVERSITY')
+- Filter by subject value: AND CONTAINS(UPPER(TRIM(f.VALUE::STRING)),'DATA SCIENCE')
+  (NEVER use the SELECT alias in WHERE — always repeat the full TRIM(f.VALUE::STRING) expression)
 
 RULES:
 1. Write only SELECT statements — no DDL, DML, or destructive operations.
 2. Always add LIMIT 200 unless the question needs aggregated totals only.
 3. Use TRIM() when parsing FLATTEN values.
 4. Return ONLY the SQL — no markdown, no explanation.
+5. NEVER reference a SELECT alias in WHERE or HAVING — repeat the full expression.
+6. Use positional GROUP BY (GROUP BY 1, 2, 3) rather than alias names.
 """
 
 def run_llm_query(question: str, api_key: str):
@@ -999,7 +1003,9 @@ with t5:
     """)
     if not us.empty:
         ts = us.groupby("SUBJECT")["CNT"].sum().sort_values(ascending=False).head(8).index
-        pv = (us[us["UNIT"].isin(top_units) & us["SUBJECT"].isin(ts)]
+        heatmap_units = (us.groupby("UNIT")["CNT"].sum()
+                         .sort_values(ascending=False).head(TOP_N).index.tolist())
+        pv = (us[us["UNIT"].isin(heatmap_units) & us["SUBJECT"].isin(ts)]
               .pivot_table(index="SUBJECT", columns="UNIT", values="CNT", fill_value=0))
         if not pv.empty:
             fig3 = px.imshow(pv,
