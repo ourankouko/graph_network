@@ -215,15 +215,16 @@ TBL = (f"{st.secrets['snowflake_intel']['database']}."
 # ── CHART HELPERS ─────────────────────────────────────────────────────────────
 def clean_fig(fig, h=380):
     fig.update_layout(
-        plot_bgcolor=WHITE, paper_bgcolor=WHITE,
-        font=dict(color=SLATE, size=13),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(size=13),
         margin=dict(t=25, b=50, l=10, r=30),
         height=h,
         legend=dict(font=dict(size=12), bgcolor="rgba(0,0,0,0)"),
     )
-    fig.update_xaxes(showgrid=False, linecolor=LIGHT, tickcolor=LIGHT,
+    fig.update_xaxes(showgrid=False, linecolor="rgba(128,128,128,0.4)", tickcolor="rgba(128,128,128,0.4)",
                      tickfont=dict(size=12))
-    fig.update_yaxes(gridcolor=LIGHT, linecolor="rgba(0,0,0,0)",
+    fig.update_yaxes(gridcolor="rgba(128,128,128,0.2)", linecolor="rgba(0,0,0,0)",
                      tickfont=dict(size=12))
     return fig
 
@@ -581,7 +582,7 @@ with t1:
         pat_t = trend_df[trend_df["IP_TYPE"]=="Patents"] if "Patents" in ip_types else pd.DataFrame()
         if not pat_t.empty:
             fig2 = px.bar(pat_t, x="YEAR", y="CNT", color="SRC", barmode="stack",
-                          color_discrete_map={"NUS":NUS_BLUE,"External":LIGHT},
+                          color_discrete_map={"NUS":NUS_BLUE,"External":"#6FA3C8"},
                           labels={"CNT":"Patents","YEAR":"Year","SRC":""})
             fig2.update_layout(xaxis=dict(tickmode="linear",dtick=1))
             st.plotly_chart(clean_fig(fig2,380), use_container_width=True)
@@ -671,7 +672,7 @@ with t2:
             fig.update_traces(textposition="inside", textinfo="percent+label",
                                textfont_size=13)
             fig.update_layout(showlegend=False, margin=dict(t=10,b=10,l=10,r=10),
-                               paper_bgcolor=WHITE, height=300)
+                               paper_bgcolor="rgba(0,0,0,0)", height=300)
             st.plotly_chart(fig, use_container_width=True)
 
 
@@ -977,10 +978,10 @@ with t5:
                   .pivot_table(index="SUBJECT", columns="UNIT", values="CNT", fill_value=0))
             if not pv.empty:
                 fig3 = px.imshow(pv,
-                                  color_continuous_scale=[[0,WHITE],[0.3,LIGHT],[1,NUS_BLUE]],
+                                  color_continuous_scale=[[0,"rgba(0,61,124,0.08)"],[0.4,"#5B9FC8"],[1,NUS_BLUE]],
                                   labels=dict(color="Records"), aspect="auto")
                 fig3.update_layout(margin=dict(t=10,b=10,l=10,r=10),
-                                    paper_bgcolor=WHITE, height=320,
+                                    paper_bgcolor="rgba(0,0,0,0)", height=320,
                                     coloraxis_showscale=False,
                                     xaxis=dict(tickfont=dict(size=11)),
                                     yaxis=dict(tickfont=dict(size=11)))
