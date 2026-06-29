@@ -1786,7 +1786,6 @@ with chat_col:
     st.caption("Ask in plain language — or click an example to get started:")
     _CHAT_EXAMPLES = [
         "Recommend top 5 industry partners for NUS in AI",
-        "Which industry partners collaborate most with NUS in semiconductors?",
     ]
     _ex_cols = st.columns(len(_CHAT_EXAMPLES))
     for _i, _ex in enumerate(_CHAT_EXAMPLES):
