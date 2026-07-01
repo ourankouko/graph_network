@@ -1,9 +1,11 @@
-streamlit
-snowflake-snowpark-python
-snowflake-connector-python
+streamlit==1.58.0
 pandas
-plotly
-networkx
-pyvis
 anthropic
+pyvis
+networkx
 python-docx
+plotly
+snowflake-snowpark-python
+snowflake-connector-python[pandas]
+cryptography
+pyarrow
