@@ -32,12 +32,23 @@ st.write("Discover institutions and corporations with shared research interests 
 # -----------------------------
 # Snowflake connection
 # -----------------------------
+def _load_private_key(pem_str: str) -> bytes:
+    """Load a PEM private key string and return DER bytes for Snowflake auth."""
+    from cryptography.hazmat.primitives import serialization
+    p_key = serialization.load_pem_private_key(pem_str.encode(), password=None)
+    return p_key.private_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+
+
 @st.cache_resource
 def create_session():
     connection_parameters = {
         "account": st.secrets["snowflake"]["account"],
         "user": st.secrets["snowflake"]["user"],
-        "password": st.secrets["snowflake"]["password"],
+        "private_key": _load_private_key(st.secrets["snowflake"]["private_key"]),
         "role": st.secrets["snowflake"]["role"],
         "warehouse": st.secrets["snowflake"]["warehouse"],
         "database": st.secrets["snowflake"]["database"],

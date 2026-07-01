@@ -204,13 +204,25 @@ section[data-testid="stSidebar"] button:hover {{
 
 
 # ── DATA LAYER ────────────────────────────────────────────────────────────────
+def _load_private_key(pem_str: str) -> bytes:
+    """Load a PEM private key string and return DER bytes for Snowflake auth."""
+    from cryptography.hazmat.primitives import serialization
+    p_key = serialization.load_pem_private_key(pem_str.encode(), password=None)
+    return p_key.private_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+
+
 @st.cache_resource(show_spinner=False)
 def get_conn():
     if not SNOWFLAKE_AVAILABLE:
         return None
     cfg = st.secrets["snowflake_intel"]
     return snowflake.connector.connect(
-        account=cfg["account"], user=cfg["user"], password=cfg["password"],
+        account=cfg["account"], user=cfg["user"],
+        private_key=_load_private_key(cfg["private_key"]),
         database=cfg["database"], schema=cfg["schema"],
         warehouse=cfg["warehouse"], role=cfg["role"],
         client_session_keep_alive=True,
