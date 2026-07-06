@@ -443,7 +443,7 @@ with nav_col1:
     if st.button("🧲 Potential Collaborator Finder", use_container_width=True):
         st.switch_page("pages/1_Research_Collaboration_Explorer.py")
 with nav_col2:
-    st.button("📊 Industry Intelligence Dashboard", disabled=True, use_container_width=True)
+    st.button("📊 Industry Collaboration Overview", disabled=True, use_container_width=True)
 
 # ── SINGAPORE BANNER ─────────────────────────────────────────────────────────
 st.markdown(
@@ -640,41 +640,6 @@ with t1:
             fig2.update_layout(xaxis=dict(tickmode="linear",dtick=1))
             st.plotly_chart(clean_fig(fig2,380), use_container_width=True)
 
-    # ── Research-area drill-down (broad faculty area → granular subject) ──────
-    section("Research areas — click a faculty area to drill into subjects")
-    tree_df = sql(f"""
-        WITH area_map AS (
-            -- derive exact subject→area map from single-area records (deterministic taxonomy)
-            SELECT DISTINCT TRIM(s.VALUE::STRING) AS SUBJ, TRIM(QS_SUBJECT_AREA) AS AREA
-            FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(REPLACE(QS_SUBJECT,',','|'),'|')) s
-            WHERE QS_SUBJECT_AREA NOT LIKE '%|%'
-              AND TRIM(QS_SUBJECT_AREA) NOT IN ('','-')
-              AND TRIM(s.VALUE::STRING) NOT IN ('','-')
-        ),
-        subj_counts AS (
-            SELECT TRIM(s.VALUE::STRING) AS SUBJ, COUNT(*) AS CNT
-            FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(REPLACE(QS_SUBJECT,',','|'),'|')) s
-            WHERE NUS_IP=TRUE
-              AND APPLICATION_PUBLICATION_YEAR BETWEEN {yr_min} AND {yr_max}
-              AND IP_TYPE IN {ip_filter}
-              AND TRIM(s.VALUE::STRING) NOT IN ('','-')
-            GROUP BY 1
-        )
-        SELECT COALESCE(m.AREA,'(unmapped)') AS AREA, c.SUBJ AS SUBJECT, c.CNT
-        FROM subj_counts c LEFT JOIN area_map m ON c.SUBJ = m.SUBJ
-    """)
-    if not tree_df.empty:
-        figt = px.treemap(tree_df, path=[px.Constant("All research"), "AREA", "SUBJECT"],
-                          values="CNT", color="AREA",
-                          color_discrete_sequence=CHART_COLS)
-        figt.update_traces(root_color="rgba(0,0,0,0)",
-                           hovertemplate="<b>%{label}</b><br>Records: %{value}<extra></extra>")
-        figt.update_layout(margin=dict(t=10,b=10,l=10,r=10),
-                           paper_bgcolor="rgba(0,0,0,0)", height=430)
-        st.plotly_chart(figt, use_container_width=True)
-        insight("Five broad QS faculty areas at the top level — click any area to drill "
-                "into its granular subjects, then click the centre to zoom back out.")
-
 
 # ════════════════════════════════════════════════════════════════════════════════
 # TAB 2 — COLLABORATION AREAS
@@ -755,13 +720,29 @@ with t2:
             GROUP BY 1 ORDER BY 2 DESC
         """)
         if not sd.empty:
-            fig = px.pie(sd, names="SUBJECT", values="CNT",
-                         color_discrete_sequence=CHART_COLS, hole=0.4)
-            fig.update_traces(textposition="inside", textinfo="percent+label",
-                               textfont_size=13)
-            fig.update_layout(showlegend=False, margin=dict(t=10,b=10,l=10,r=10),
-                               paper_bgcolor="rgba(0,0,0,0)", height=300)
-            st.plotly_chart(fig, use_container_width=True)
+            _total = sd["CNT"].sum()
+            sd = sd.copy()
+            sd["Area"] = sd["SUBJECT"].str.title()
+            sd["PCT"] = (sd["CNT"] / _total * 100).round(1)
+            sd["LABEL"] = sd.apply(lambda r: f"{int(r['CNT'])}  ({r['PCT']}%)", axis=1)
+            AREA_COLS = {
+                "Life Sciences & Medicine":      "#2C6BAD",
+                "Engineering & Technology":      "#EF7C00",
+                "Natural Sciences":              "#2E9E6B",
+                "Social Sciences & Management":  "#8E6BAD",
+                "Arts & Humanities":             "#C0504D",
+            }
+            fig = px.bar(sd, x="CNT", y="Area", orientation="h", text="LABEL",
+                         color="Area", color_discrete_map=AREA_COLS,
+                         labels={"CNT": "", "Area": ""})
+            fig.update_traces(textposition="outside", textfont_size=12, cliponaxis=False)
+            fig.update_layout(
+                showlegend=False,
+                yaxis=dict(autorange="reversed", automargin=True),
+                xaxis=dict(range=[0, sd["CNT"].max() * 1.18]),
+                margin=dict(t=20, b=30, l=185, r=50),
+            )
+            st.plotly_chart(clean_fig(fig, 320), use_container_width=True)
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -825,6 +806,13 @@ with t3:
             fig.add_vline(x=0, line_color=SLATE, line_width=1)
             fig.update_layout(showlegend=False)
             st.plotly_chart(clean_fig(fig,420), use_container_width=True)
+            _early = f"{yr_min}" if yr_min == mid else f"{yr_min}–{mid}"
+            _late = f"{mid+1}" if mid + 1 == yr_max else f"{mid+1}–{yr_max}"
+            st.caption(
+                f"📊 Growth compares the **average annual** external patents in **{_late}** against **{_early}** "
+                f"— the later vs earlier half of the selected {yr_min}–{yr_max} range. "
+                f"Adjust the year filter to change the comparison."
+            )
 
     with c2:
         section("What this tells us — untapped partners")
@@ -888,6 +876,13 @@ with t4:
             fig.update_layout(coloraxis_showscale=False,
                                yaxis=dict(autorange="reversed"))
             st.plotly_chart(clean_fig(fig,440), use_container_width=True)
+            _early = f"{yr_min}" if yr_min == mid else f"{yr_min}–{mid}"
+            _late = f"{mid+1}" if mid + 1 == yr_max else f"{mid+1}–{yr_max}"
+            st.caption(
+                f"📊 Growth compares the **average annual** publications in **{_late}** against **{_early}** "
+                f"— the later vs earlier half of the selected {yr_min}–{yr_max} range. "
+                f"Adjust the year filter to change the comparison."
+            )
 
     with r2:
         section("What this tells us — capacity gap")
