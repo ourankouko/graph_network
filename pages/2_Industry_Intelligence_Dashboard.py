@@ -131,11 +131,14 @@ section[data-testid="stSidebar"] button:hover {{
 }}
 
 /* ----- section label ----- */
+/* min-height + bottom-aligned text so 1-line and 2-line headers reserve the same
+   vertical space — keeps side-by-side charts aligned across columns */
 .section-label {{
     font-size:13px; font-weight:700; letter-spacing:0.07em;
     color:{NUS_ORANGE}; text-transform:uppercase;
     margin:1.2rem 0 0.4rem; border-bottom:1px solid {LIGHT};
     padding-bottom:0.2rem;
+    min-height:2.5em; display:flex; align-items:flex-end;
 }}
 
 /* ----- sg banner ----- */
@@ -645,80 +648,83 @@ with t1:
 # TAB 2 — COLLABORATION AREAS
 # ════════════════════════════════════════════════════════════════════════════════
 with t2:
-    ca, cb = st.columns([1.1, 0.9])
+    # ── queries ──
+    pp = sql(f"""
+        SELECT TRIM(f.VALUE::STRING) AS PARTNER, QS_SUBJECT AS SUBJECT,
+               APPLICATION_PUBLICATION_YEAR AS YEAR, COUNT(*) AS CNT
+        FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(NORMALIZED_NAMES_CONCAT,'|')) f
+        WHERE NUS_IP=TRUE AND IP_TYPE='Patents' AND N_CORPORATE>0
+          AND NOT CONTAINS(UPPER(TRIM(f.VALUE::STRING)),'NATIONAL UNIVERSITY')
+          AND TRIM(f.VALUE::STRING)<>''
+          AND APPLICATION_PUBLICATION_YEAR BETWEEN {yr_min} AND {yr_max}
+        GROUP BY 1,2,3 ORDER BY CNT DESC
+    """)
+    ud = sql(f"""
+        SELECT TRIM(f.VALUE::STRING) AS UNIT, COUNT(*) AS CNT
+        FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(UNITS,'|')) f
+        WHERE NUS_IP=TRUE AND IP_TYPE='Publications' AND N_CORPORATE>0
+          AND UNITS IS NOT NULL AND UNITS<>''
+          AND APPLICATION_PUBLICATION_YEAR BETWEEN {yr_min} AND {yr_max}
+        GROUP BY 1 ORDER BY 2 DESC LIMIT 12
+    """)
+    sd = sql(f"""
+        SELECT TRIM(f.VALUE::STRING) AS SUBJECT, COUNT(*) AS CNT
+        FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(QS_SUBJECT_AREA,'|')) f
+        WHERE NUS_IP=TRUE AND IP_TYPE='Publications' AND N_CORPORATE>0
+          AND APPLICATION_PUBLICATION_YEAR BETWEEN {yr_min} AND {yr_max}
+          AND TRIM(f.VALUE::STRING) NOT IN ('','-')
+        GROUP BY 1 ORDER BY 2 DESC
+    """)
 
+    # ── Row 1 — context ──
+    ca, cb = st.columns([1.1, 0.9])
     with ca:
         section("What this tells us — patent partners")
         insight("Applied Materials Inc (semiconductor & materials) and Singapore Health "
                 "Services (biomedical) are NUS's two most active patent co-inventors. "
                 "Both have been consistent multi-year partners. Formalising joint IP "
                 "roadmaps with them should be the immediate priority.")
-        st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
-        section("Top industry patent partners — NUS co-owned patents")
-        pp = sql(f"""
-            SELECT TRIM(f.VALUE::STRING) AS PARTNER, QS_SUBJECT AS SUBJECT,
-                   APPLICATION_PUBLICATION_YEAR AS YEAR, COUNT(*) AS CNT
-            FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(NORMALIZED_NAMES_CONCAT,'|')) f
-            WHERE NUS_IP=TRUE AND IP_TYPE='Patents' AND N_CORPORATE>0
-              AND NOT CONTAINS(UPPER(TRIM(f.VALUE::STRING)),'NATIONAL UNIVERSITY')
-              AND TRIM(f.VALUE::STRING)<>''
-              AND APPLICATION_PUBLICATION_YEAR BETWEEN {yr_min} AND {yr_max}
-            GROUP BY 1,2,3 ORDER BY CNT DESC
-        """)
-        if not pp.empty:
-            top_p = pp.groupby("PARTNER")["CNT"].sum().reset_index() \
-                      .sort_values("CNT",ascending=False).head(12)
-            st.plotly_chart(hbar(top_p,"CNT","PARTNER",h=420), use_container_width=True)
-
-            section("Year trend — top 5 patent partners")
-            top5 = top_p["PARTNER"].head(5).tolist()
-            tr5  = pp[pp["PARTNER"].isin(top5)].groupby(["YEAR","PARTNER"])["CNT"].sum().reset_index()
-            # Shorten partner names so the legend doesn't overwhelm the chart
-            tr5["PARTNER"] = tr5["PARTNER"].str[:28]
-            fig  = px.line(tr5, x="YEAR", y="CNT", color="PARTNER", markers=True,
-                           color_discrete_sequence=CHART_COLS,
-                           labels={"CNT":"Co-patents","YEAR":"Year","PARTNER":""})
-            fig.update_layout(
-                xaxis=dict(tickmode="linear", dtick=1),
-                legend=dict(
-                    orientation="h",          # horizontal legend below chart
-                    yanchor="top", y=-0.28,
-                    xanchor="left", x=0,
-                    font=dict(size=11),
-                ),
-                margin=dict(t=25, b=110, l=10, r=10),  # extra bottom room for legend
-            )
-            st.plotly_chart(clean_fig(fig, 340), use_container_width=True)
-
     with cb:
         section("What this tells us — publication units")
         insight("CSI SPORE (Cancer Science) and LSI (Life Sciences) generate more than "
                 "half of all NUS–industry co-publications. These units are the natural "
                 "bridge to pharmaceutical companies and health-tech investors. Target "
                 "them first for industry grant applications.")
-        st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
+
+    # ── Row 2 — top charts (matched height) ──
+    ca, cb = st.columns([1.1, 0.9])
+    with ca:
+        section("Top industry patent partners — NUS co-owned patents")
+        if not pp.empty:
+            top_p = pp.groupby("PARTNER")["CNT"].sum().reset_index() \
+                      .sort_values("CNT",ascending=False).head(12)
+            st.plotly_chart(hbar(top_p,"CNT","PARTNER",h=420), use_container_width=True)
+    with cb:
         section("NUS units with the most industry co-publications")
-        ud = sql(f"""
-            SELECT TRIM(f.VALUE::STRING) AS UNIT, COUNT(*) AS CNT
-            FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(UNITS,'|')) f
-            WHERE NUS_IP=TRUE AND IP_TYPE='Publications' AND N_CORPORATE>0
-              AND UNITS IS NOT NULL AND UNITS<>''
-              AND APPLICATION_PUBLICATION_YEAR BETWEEN {yr_min} AND {yr_max}
-            GROUP BY 1 ORDER BY 2 DESC LIMIT 12
-        """)
         if not ud.empty:
-            st.plotly_chart(hbar(ud,"CNT","UNIT",h=380,color=NUS_ORANGE),
+            st.plotly_chart(hbar(ud,"CNT","UNIT",h=420,color=NUS_ORANGE),
                             use_container_width=True)
 
+    # ── Row 3 — bottom charts (matched height) ──
+    ca, cb = st.columns([1.1, 0.9])
+    with ca:
+        section("Year trend — top 5 patent partners")
+        if not pp.empty:
+            top5 = top_p["PARTNER"].head(5).tolist()
+            tr5  = pp[pp["PARTNER"].isin(top5)].groupby(["YEAR","PARTNER"])["CNT"].sum().reset_index()
+            tr5["PARTNER"] = tr5["PARTNER"].str[:28]
+            fig  = px.line(tr5, x="YEAR", y="CNT", color="PARTNER", markers=True,
+                           color_discrete_sequence=CHART_COLS,
+                           labels={"CNT":"Co-patents","YEAR":"Year","PARTNER":""})
+            fig.update_layout(
+                xaxis=dict(tickmode="linear", dtick=1),
+                legend=dict(orientation="h", yanchor="top", y=-0.28,
+                            xanchor="left", x=0, font=dict(size=11)),
+                margin=dict(t=25, b=110, l=10, r=10),
+            )
+            st.plotly_chart(clean_fig(fig, 360), use_container_width=True)
+    with cb:
         section("Subject mix — industry co-publications")
-        sd = sql(f"""
-            SELECT TRIM(f.VALUE::STRING) AS SUBJECT, COUNT(*) AS CNT
-            FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(QS_SUBJECT_AREA,'|')) f
-            WHERE NUS_IP=TRUE AND IP_TYPE='Publications' AND N_CORPORATE>0
-              AND APPLICATION_PUBLICATION_YEAR BETWEEN {yr_min} AND {yr_max}
-              AND TRIM(f.VALUE::STRING) NOT IN ('','-')
-            GROUP BY 1 ORDER BY 2 DESC
-        """)
         if not sd.empty:
             _total = sd["CNT"].sum()
             sd = sd.copy()
@@ -742,7 +748,7 @@ with t2:
                 xaxis=dict(range=[0, sd["CNT"].max() * 1.18]),
                 margin=dict(t=20, b=30, l=185, r=50),
             )
-            st.plotly_chart(clean_fig(fig, 320), use_container_width=True)
+            st.plotly_chart(clean_fig(fig, 360), use_container_width=True)
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -780,14 +786,34 @@ with t3:
         GROUP BY 1,2 ORDER BY 1,3 DESC
     """)
 
-    c1, c2 = st.columns(2)
+    filers = sql(f"""
+        SELECT TRIM(f.VALUE::STRING) AS ENTITY, COUNT(*) AS CNT
+        FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(NORMALIZED_NAMES_CONCAT,'|')) f
+        WHERE NUS_IP=FALSE AND IP_TYPE='Patents'
+          AND (CONTAINS(UPPER(QS_SUBJECT),'DATA SCIENCE')
+               OR CONTAINS(UPPER(QS_SUBJECT),'COMPUTER SCIENCE'))
+          AND APPLICATION_PUBLICATION_YEAR BETWEEN {yr_min} AND {yr_max}
+          AND TRIM(f.VALUE::STRING)<>''
+        GROUP BY 1 ORDER BY 2 DESC LIMIT 12
+    """)
 
+    # ── Row 1 — context ──
+    c1, c2 = st.columns(2)
     with c1:
         section("What this tells us — patent domain trends")
         warn("Data Science is the single growing external patent domain. Every other "
              "sector is contracting, signalling that industry is consolidating spend. "
              "Align funding proposals to Data Science and CS now — before RFPs are issued.")
+    with c2:
+        section("What this tells us — untapped partners")
+        insight("None of the top CS and Data Science patent filers currently hold a "
+                "NUS patent collaboration. Each company on this list is a direct, "
+                "data-backed outreach target for joint research and co-IP agreements. "
+                "Prioritise outreach within the next 6 months.")
 
+    # ── Row 2 — charts (matched height) ──
+    c1, c2 = st.columns(2)
+    with c1:
         section("External patent growth rate — early vs late period")
         if not ext_df.empty:
             mid = (yr_min+yr_max)//2
@@ -805,7 +831,7 @@ with t3:
                          labels={"PCT":"Growth %","SUBJECT":""})
             fig.add_vline(x=0, line_color=SLATE, line_width=1)
             fig.update_layout(showlegend=False)
-            st.plotly_chart(clean_fig(fig,420), use_container_width=True)
+            st.plotly_chart(clean_fig(fig,440), use_container_width=True)
             _early = f"{yr_min}" if yr_min == mid else f"{yr_min}–{mid}"
             _late = f"{mid+1}" if mid + 1 == yr_max else f"{mid+1}–{yr_max}"
             st.caption(
@@ -813,27 +839,10 @@ with t3:
                 f"— the later vs earlier half of the selected {yr_min}–{yr_max} range. "
                 f"Adjust the year filter to change the comparison."
             )
-
     with c2:
-        section("What this tells us — untapped partners")
-        insight("None of the top CS and Data Science patent filers currently hold a "
-                "NUS patent collaboration. Each company on this list is a direct, "
-                "data-backed outreach target for joint research and co-IP agreements. "
-                "Prioritise outreach within the next 6 months.")
-
         section("Top CS & Data Science filers — not yet NUS partners")
-        filers = sql(f"""
-            SELECT TRIM(f.VALUE::STRING) AS ENTITY, COUNT(*) AS CNT
-            FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(NORMALIZED_NAMES_CONCAT,'|')) f
-            WHERE NUS_IP=FALSE AND IP_TYPE='Patents'
-              AND (CONTAINS(UPPER(QS_SUBJECT),'DATA SCIENCE')
-                   OR CONTAINS(UPPER(QS_SUBJECT),'COMPUTER SCIENCE'))
-              AND APPLICATION_PUBLICATION_YEAR BETWEEN {yr_min} AND {yr_max}
-              AND TRIM(f.VALUE::STRING)<>''
-            GROUP BY 1 ORDER BY 2 DESC LIMIT 12
-        """)
         if not filers.empty:
-            st.plotly_chart(hbar(filers,"CNT","ENTITY",h=420,color=NUS_BLUE),
+            st.plotly_chart(hbar(filers,"CNT","ENTITY",h=440,color=NUS_BLUE),
                             use_container_width=True)
 
 
@@ -841,15 +850,24 @@ with t3:
 # TAB 4 — RESEARCH DEMANDS
 # ════════════════════════════════════════════════════════════════════════════════
 with t4:
+    # ── Row 1 — context ──
     r1, r2 = st.columns(2)
-
     with r1:
         section("What this tells us — capacity build")
         insight("Data Science (+53%) and CS & Info Systems (+43%) are NUS's "
                 "fastest-growing publication domains — precisely where industry "
                 "patent demand is also growing. This alignment makes a compelling "
                 "case for priority investment and targeted IP conversion.")
+    with r2:
+        section("What this tells us — capacity gap")
+        insight("CS and Data Science have the biggest gap between external demand and "
+                "NUS IP presence (under 2% share). These are the domains where NUS "
+                "research is growing fastest — closing this IP gap is the highest-ROI "
+                "action available to the TTO right now.")
 
+    # ── Row 2 — charts (matched height) ──
+    r1, r2 = st.columns(2)
+    with r1:
         section("NUS publication growth by domain")
         pub_s = sql(f"""
             SELECT APPLICATION_PUBLICATION_YEAR AS YEAR,
@@ -885,12 +903,6 @@ with t4:
             )
 
     with r2:
-        section("What this tells us — capacity gap")
-        insight("CS and Data Science have the biggest gap between external demand and "
-                "NUS IP presence (under 2% share). These are the domains where NUS "
-                "research is growing fastest — closing this IP gap is the highest-ROI "
-                "action available to the TTO right now.")
-
         section("NUS share of all Singapore patents — by domain")
         gap = sql(f"""
             SELECT TRIM(f.VALUE::STRING) AS SUBJECT,

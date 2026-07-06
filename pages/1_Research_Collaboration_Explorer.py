@@ -14,7 +14,35 @@ from docx.shared import Pt, RGBColor, Inches
 
 st.markdown("""
 <style>
+/* hide sidebar page nav (top buttons handle navigation) */
 [data-testid="stSidebarNav"] { display:none !important; }
+
+/* ----- sidebar: NUS-blue scheme (matches Industry Collaboration Overview) ----- */
+[data-testid="stSidebar"]            { background:#003D7C !important; }
+[data-testid="stSidebar"] *          { color:#D6E4F0 !important; }
+[data-testid="stSidebar"] h1,
+[data-testid="stSidebar"] h2,
+[data-testid="stSidebar"] h3,
+[data-testid="stSidebar"] label      { color:#FFFFFF !important; }
+
+/* inputs, selects, textareas */
+[data-testid="stSidebar"] input,
+[data-testid="stSidebar"] textarea,
+[data-testid="stSidebar"] [data-baseweb="select"] > div {
+    background:#0A3060 !important; color:#FFFFFF !important;
+    border:1px solid #1A5090 !important; border-radius:6px !important;
+}
+
+/* buttons */
+[data-testid="stSidebar"] button,
+[data-testid="stSidebar"] .stButton > button {
+    background:#2E6DA4 !important; color:#FFFFFF !important; border:none !important;
+    border-radius:6px !important; font-weight:600 !important; font-size:14px !important;
+}
+[data-testid="stSidebar"] button:hover,
+[data-testid="stSidebar"] .stButton > button:hover {
+    background:#245888 !important; color:#FFFFFF !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -284,20 +312,44 @@ LIMIT {top_n}
     return run_query(sql)
 
 
+# Map common informal terms to actual QS granular subjects (fallback when the LLM
+# passes an informal term straight through)
+_FIELD_ALIASES = {
+    "AI": "COMPUTER SCIENCE",
+    "ARTIFICIAL INTELLIGENCE": "COMPUTER SCIENCE",
+    "MACHINE LEARNING": "COMPUTER SCIENCE",
+    "ML": "COMPUTER SCIENCE",
+    "DEEP LEARNING": "COMPUTER SCIENCE",
+    "COMPUTER SCIENCE": "COMPUTER SCIENCE",
+    "DATA SCIENCE": "DATA SCIENCE",
+    "SEMICONDUCTORS": "ENGINEERING - ELECTRICAL",
+    "SEMICONDUCTOR": "ENGINEERING - ELECTRICAL",
+    "ELECTRONICS": "ENGINEERING - ELECTRICAL",
+    "FINTECH": "COMPUTER SCIENCE | ACCOUNTING & FINANCE",
+    "PAYMENTS": "COMPUTER SCIENCE | ACCOUNTING & FINANCE",
+}
+
+
 def _field_clause(subject: str, col: str = "p.QS_SUBJECT") -> str:
     """Build a SQL clause matching one or more QS subjects (separated by '|').
     Supports multi-subject mapping for cross-disciplinary topics."""
     raw = (subject or "").strip()
     if not raw:
         return "TRUE"
-    parts = [p.strip() for p in raw.split("|") if p.strip()]
     terms = []
-    for p in parts:
+    for p in raw.split("|"):
+        p = p.strip()
+        if not p:
+            continue
         mapped = _FIELD_ALIASES.get(p.upper(), p.upper())
-        terms.append(mapped.replace("'", "''"))
+        # an alias may itself expand to several subjects (e.g. fintech → CS | Finance)
+        for m in mapped.split("|"):
+            m = m.strip()
+            if m and m not in terms:
+                terms.append(m)
     if not terms:
         return "TRUE"
-    ors = " OR ".join(f"CONTAINS(UPPER({col}), '{t}')" for t in terms)
+    ors = " OR ".join(f"CONTAINS(UPPER({col}), '{t.replace(chr(39), chr(39)*2)}')" for t in terms)
     return f"({ors})"
 
 
