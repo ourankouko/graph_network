@@ -623,6 +623,119 @@ Format each recommendation exactly as follows (markdown):
     return response.content[0].text.strip()
 
 
+def _partner_records_cte(partner: str) -> str:
+    """Shared CTE: normalized names + records (UIDs) for a parent brand."""
+    p = partner.replace("'", "''")
+    return f"""
+WITH pnames AS (
+    SELECT DISTINCT TRIM(UPPER(n.VALUE::STRING)) AS NNAME
+    FROM INDUSTRY_AGG.PUBLIC.ENTITIES,
+         LATERAL FLATTEN(INPUT => SPLIT(
+            COALESCE(NORMALIZED_NAMES_PAT,'') || '|' || COALESCE(NORMALIZED_NAMES_PUB,''), '|')) n
+    WHERE PARENT_BRAND = '{p}' AND TRIM(n.VALUE::STRING) <> ''
+),
+p_uids AS (
+    SELECT DISTINCT p.UID
+    FROM INDUSTRY_AGG.PUBLIC.PAT_PUB p,
+         LATERAL FLATTEN(INPUT => SPLIT(p.NORMALIZED_NAMES_CONCAT, '|')) f
+    JOIN pnames ON TRIM(UPPER(f.VALUE::STRING)) = NNAME
+)"""
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def flat_partner_subjects(partner: str) -> pd.DataFrame:
+    """The partner's areas of focus (QS faculty areas), by record count."""
+    sql = _partner_records_cte(partner) + """
+SELECT TRIM(a.VALUE::STRING) AS AREA, COUNT(DISTINCT p.UID) AS CNT
+FROM p_uids pu JOIN INDUSTRY_AGG.PUBLIC.PAT_PUB p ON p.UID = pu.UID,
+     LATERAL FLATTEN(INPUT => SPLIT(p.QS_SUBJECT_AREA, '|')) a
+WHERE TRIM(a.VALUE::STRING) NOT IN ('', '-')
+GROUP BY 1 ORDER BY 2 DESC
+"""
+    return run_query(sql)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def flat_partner_nus_units(partner: str) -> pd.DataFrame:
+    """NUS units the partner has co-published / co-filed with."""
+    sql = _partner_records_cte(partner) + """
+SELECT TRIM(u.VALUE::STRING) AS UNIT, COUNT(DISTINCT p.UID) AS CNT
+FROM p_uids pu JOIN INDUSTRY_AGG.PUBLIC.PAT_PUB p ON p.UID = pu.UID,
+     LATERAL FLATTEN(INPUT => SPLIT(p.UNITS, '|')) u
+WHERE p.NUS_IP = TRUE AND p.UNITS IS NOT NULL AND TRIM(u.VALUE::STRING) <> ''
+GROUP BY 1 ORDER BY 2 DESC
+"""
+    return run_query(sql)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def flat_partner_collaborators(partner: str, limit: int = 15) -> pd.DataFrame:
+    """Other organisations (parent brands, excl. NUS) the partner co-appears with."""
+    p = partner.replace("'", "''")
+    sql = _partner_records_cte(partner) + f""",
+comap AS (
+    SELECT DISTINCT TRIM(UPPER(n.VALUE::STRING)) AS NNAME, PARENT_BRAND, CATEGORY, NUS_AFFILIATED
+    FROM INDUSTRY_AGG.PUBLIC.ENTITIES,
+         LATERAL FLATTEN(INPUT => SPLIT(
+            COALESCE(NORMALIZED_NAMES_PAT,'') || '|' || COALESCE(NORMALIZED_NAMES_PUB,''), '|')) n
+    WHERE TRIM(n.VALUE::STRING) <> ''
+)
+SELECT c.PARENT_BRAND AS ORG, ANY_VALUE(c.CATEGORY) AS CATEGORY, COUNT(DISTINCT p.UID) AS CNT
+FROM p_uids pu JOIN INDUSTRY_AGG.PUBLIC.PAT_PUB p ON p.UID = pu.UID,
+     LATERAL FLATTEN(INPUT => SPLIT(p.NORMALIZED_NAMES_CONCAT, '|')) f
+JOIN comap c ON TRIM(UPPER(f.VALUE::STRING)) = c.NNAME
+WHERE c.PARENT_BRAND <> '{p}' AND c.NUS_AFFILIATED = FALSE AND c.CATEGORY <> 'Individual'
+GROUP BY 1 ORDER BY 3 DESC
+LIMIT {int(limit)}
+"""
+    return run_query(sql)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def build_partner_flat_graph(partner: str) -> str:
+    """PyVis graph centred on a partner: focus areas, NUS units, other collaborators."""
+    subj = flat_partner_subjects(partner)
+    units = flat_partner_nus_units(partner)
+    collab = flat_partner_collaborators(partner, limit=10)
+
+    net = Network(height="600px", width="100%", bgcolor="#1a1a1a",
+                  font_color="#ffffff", directed=False, notebook=False, cdn_resources="in_line")
+    net.force_atlas_2based(gravity=-45, central_gravity=0.012, spring_length=140,
+                           spring_strength=0.08, damping=0.4, overlap=0)
+
+    net.add_node(partner, label=partner, color="#ff6b6b", size=34,
+                 title=f"{partner} (recommended partner)", shape="dot")
+
+    # focus areas
+    for _, r in subj.head(6).iterrows():
+        nid = f"subj::{r['AREA']}"
+        net.add_node(nid, label=r["AREA"].title(), color="#F4B183", size=16,
+                     title=f"Focus area · {int(r['CNT'])} records", shape="square")
+        net.add_edge(partner, nid, color="#F4B183", width=1 + (r["CNT"] ** 0.3))
+
+    # NUS units (via an NUS hub)
+    if not units.empty:
+        net.add_node("NUS_HUB", label="NUS", color="#ff9933", size=24,
+                     title="National University of Singapore", shape="dot")
+        net.add_edge(partner, "NUS_HUB", color="#ff9933", width=3)
+        for _, r in units.head(8).iterrows():
+            nid = f"unit::{r['UNIT']}"
+            net.add_node(nid, label=r["UNIT"], color="#ffd27f", size=13,
+                         title=f"NUS unit · {int(r['CNT'])} joint works", shape="triangle")
+            net.add_edge("NUS_HUB", nid, color="#ffd27f", width=1 + (r["CNT"] ** 0.4))
+
+    # other collaborators, coloured by category
+    _catcol = {"Corporation": "#ccccff", "Institute": "#33cccc",
+               "Hospital": "#9DC3E6", "Government / Non-profit": "#c9a0dc"}
+    for _, r in collab.iterrows():
+        nid = f"org::{r['ORG']}"
+        net.add_node(nid, label=r["ORG"], color=_catcol.get(r["CATEGORY"], "#D9D9D9"),
+                     size=13, title=f"{r['ORG']} ({r['CATEGORY']}) · {int(r['CNT'])} shared works")
+        net.add_edge(partner, nid, color="#888888", width=1 + (r["CNT"] ** 0.3))
+
+    return net.generate_html()
+
+
 def run_org_collaborators_query(org_ids: list) -> pd.DataFrame:
     """Fetch all collaborators of the recommended orgs (both patents and publications)."""
     if not org_ids:
@@ -1776,7 +1889,10 @@ with graph_col:
             _sdf = recs_df[_c].copy()
             _sdf.columns = _n
             _sdf.index = range(1, len(_sdf) + 1)
-            st.dataframe(_sdf, use_container_width=True)
+            st.caption("Click a row to explore that partner's focus areas, NUS-unit collaborations, and other partners.")
+            _sel = st.dataframe(
+                _sdf, on_select="rerun", selection_mode="single-row", use_container_width=True,
+            )
 
             _rcol1, _rcol2, _rcol3 = st.columns([1, 1, 4])
             with _rcol1:
@@ -1795,6 +1911,56 @@ with graph_col:
                         key="rec_flat_docx",
                     )
             st.caption("Full write-up is shown in the chat panel on the left.")
+
+            # ── Partner drill-down (click a row above) ──
+            if _sel.selection.rows:
+                _partner = str(recs_df.iloc[_sel.selection.rows[0]]["ORG_NAME"])
+                st.markdown("---")
+                st.subheader(f"🔎 {_partner.title()}")
+                with st.spinner("Loading partner network…"):
+                    _subj = flat_partner_subjects(_partner)
+                    _units = flat_partner_nus_units(_partner)
+                    _collab = flat_partner_collaborators(_partner, limit=15)
+
+                with st.expander("🌐 Partner network — focus areas, NUS units, other collaborators", expanded=True):
+                    components.html(build_partner_flat_graph(_partner), height=620, scrolling=True)
+                    st.markdown(
+                        "<span style='font-size:13px'>"
+                        "<span style='color:#ff6b6b'>■</span> Partner &nbsp;|&nbsp; "
+                        "<span style='color:#F4B183'>■</span> Focus area &nbsp;|&nbsp; "
+                        "<span style='color:#ff9933'>■</span> NUS &nbsp;|&nbsp; "
+                        "<span style='color:#ffd27f'>■</span> NUS unit &nbsp;|&nbsp; "
+                        "<span style='color:#33cccc'>■</span> Institute &nbsp;|&nbsp; "
+                        "<span style='color:#ccccff'>■</span> Corporation</span>",
+                        unsafe_allow_html=True,
+                    )
+
+                _da, _db = st.columns(2)
+                with _da:
+                    st.markdown("**Areas of focus**")
+                    if not _subj.empty:
+                        _sd = _subj.rename(columns={"AREA": "Area", "CNT": "Records"})
+                        st.dataframe(_sd, use_container_width=True, hide_index=True)
+                    else:
+                        st.caption("—")
+                with _db:
+                    st.markdown("**NUS units collaborated with**")
+                    if not _units.empty:
+                        _ud = _units.rename(columns={"UNIT": "NUS Unit", "CNT": "Joint works"})
+                        st.dataframe(_ud, use_container_width=True, hide_index=True)
+                    else:
+                        st.caption("No NUS-unit collaborations found.")
+
+                st.markdown("**Other collaboration partners**")
+                if not _collab.empty:
+                    _cd = _collab.rename(columns={"ORG": "Organisation", "CATEGORY": "Category", "CNT": "Shared works"})
+                    st.dataframe(_cd, use_container_width=True, hide_index=True)
+                    st.download_button(
+                        "⬇️ Download collaborators CSV", data=_cd.to_csv(index=False).encode("utf-8"),
+                        file_name=f"{_partner[:30]}_collaborators.csv", mime="text/csv", key="partner_collab_csv",
+                    )
+                else:
+                    st.caption("—")
         else:
             recs_df = pd.DataFrame(rec_data["recs_df"])
             institution = rec_data["institution"]
