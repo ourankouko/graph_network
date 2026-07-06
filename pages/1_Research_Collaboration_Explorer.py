@@ -22,7 +22,7 @@ c1, c2, _ = st.columns([2, 2, 6])
 with c1:
     st.button("🧲 Potential Collaborator Finder", disabled=True, use_container_width=True)
 with c2:
-    if st.button("📊 Industry Intelligence Dashboard", use_container_width=True):
+    if st.button("📊 Industry Collaboration Overview", use_container_width=True):
         st.switch_page("pages/2_Industry_Intelligence_Dashboard.py")
 
 st.title("🧲 Potential Collaborator Finder")
@@ -284,135 +284,21 @@ LIMIT {top_n}
     return run_query(sql)
 
 
-def run_recommendation_query(
-    institution: str,
-    subject_filter: str = None,
-    category: str = None,
-    top_n: int = 3,
-) -> pd.DataFrame:
-    """
-    Find top N recommended industry partners for an institution.
-    Returns ALL orgs with shared subjects (both collaborators and non-collaborators),
-    flagged with IS_NEW_OPPORTUNITY.
-    Aggregates across both Patents and Publications.
-    """
-    safe_inst = sql_escape(institution)
-    subject_clause = (
-        f"AND (SOURCE_NAME ILIKE '%{sql_escape(subject_filter)}%' OR TARGET_NAME ILIKE '%{sql_escape(subject_filter)}%')"
-        if subject_filter else ""
-    )
-    cat_filter = (
-        f"AND (SOURCE_CATEGORY = '{sql_escape(category)}' OR TARGET_CATEGORY = '{sql_escape(category)}')"
-        if category and category != "All" else ""
-    )
-
-    sql = f"""
-WITH inst_subjects AS (
-    SELECT DISTINCT
-        CASE WHEN SOURCE_NAME ILIKE '%{safe_inst}%' THEN TARGET ELSE SOURCE END AS SUBJECT_ID,
-        CASE WHEN SOURCE_NAME ILIKE '%{safe_inst}%' THEN TARGET_NAME ELSE SOURCE_NAME END AS SUBJECT_NAME
-    FROM GRAPH_NETWORK.GRAPH.ALL_EDGES_ENRICHED
-    WHERE (SOURCE_NAME ILIKE '%{safe_inst}%' OR TARGET_NAME ILIKE '%{safe_inst}%')
-    AND EDGE_TYPE IN ('Applicant_Subject', 'Institute_Subject')
-    {subject_clause}
-),
-org_subject_edges AS (
-    SELECT
-        CASE WHEN SOURCE_TYPE IN ('Applicant', 'Institutes') THEN SOURCE ELSE TARGET END AS ORG_ID,
-        CASE WHEN SOURCE_TYPE IN ('Applicant', 'Institutes') THEN SOURCE_NAME ELSE TARGET_NAME END AS ORG_NAME,
-        CASE WHEN SOURCE_TYPE IN ('Applicant', 'Institutes') THEN SOURCE_CATEGORY ELSE TARGET_CATEGORY END AS ORG_CATEGORY,
-        CASE WHEN SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects) THEN SOURCE ELSE TARGET END AS MATCHED_SUBJECT_ID,
-        CASE WHEN SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects) THEN SOURCE_NAME ELSE TARGET_NAME END AS MATCHED_SUBJECT_NAME,
-        IP_TYPE,
-        WEIGHT
-    FROM GRAPH_NETWORK.GRAPH.ALL_EDGES_ENRICHED
-    WHERE EDGE_TYPE IN ('Applicant_Subject', 'Institute_Subject')
-    AND (SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects) OR TARGET IN (SELECT SUBJECT_ID FROM inst_subjects))
-    AND SOURCE_NAME NOT ILIKE '%{safe_inst}%'
-    AND TARGET_NAME NOT ILIKE '%{safe_inst}%'
-    {cat_filter}
-),
-org_patents AS (
-    SELECT ORG_ID, ORG_NAME, ORG_CATEGORY,
-        COUNT(DISTINCT MATCHED_SUBJECT_ID) AS PATENT_SHARED_SUBJECTS,
-        SUM(WEIGHT) AS PATENT_STRENGTH
-    FROM org_subject_edges
-    WHERE IP_TYPE = 'Patents'
-    GROUP BY ORG_ID, ORG_NAME, ORG_CATEGORY
-),
-org_pubs AS (
-    SELECT ORG_ID, ORG_NAME, ORG_CATEGORY,
-        COUNT(DISTINCT MATCHED_SUBJECT_ID) AS PUB_SHARED_SUBJECTS,
-        SUM(WEIGHT) AS PUB_STRENGTH
-    FROM org_subject_edges
-    WHERE IP_TYPE = 'Publications'
-    GROUP BY ORG_ID, ORG_NAME, ORG_CATEGORY
-),
-org_matches AS (
-    SELECT
-        COALESCE(p.ORG_ID, pub.ORG_ID) AS ORG_ID,
-        COALESCE(p.ORG_NAME, pub.ORG_NAME) AS ORG_NAME,
-        COALESCE(p.ORG_CATEGORY, pub.ORG_CATEGORY) AS ORG_CATEGORY,
-        COALESCE(p.PATENT_SHARED_SUBJECTS, 0) AS PATENT_SHARED_SUBJECTS,
-        COALESCE(p.PATENT_STRENGTH, 0) AS PATENT_STRENGTH,
-        COALESCE(pub.PUB_SHARED_SUBJECTS, 0) AS PUB_SHARED_SUBJECTS,
-        COALESCE(pub.PUB_STRENGTH, 0) AS PUB_STRENGTH,
-        COALESCE(p.PATENT_SHARED_SUBJECTS, 0) + COALESCE(pub.PUB_SHARED_SUBJECTS, 0) AS TOTAL_SHARED_SUBJECTS,
-        COALESCE(p.PATENT_STRENGTH, 0) + COALESCE(pub.PUB_STRENGTH, 0) AS TOTAL_STRENGTH
-    FROM org_patents p
-    FULL OUTER JOIN org_pubs pub ON p.ORG_ID = pub.ORG_ID
-),
-direct_collabs AS (
-    SELECT
-        CASE WHEN SOURCE_NAME ILIKE '%{safe_inst}%' THEN TARGET ELSE SOURCE END AS COLLAB_ID,
-        SUM(WEIGHT) AS COLLAB_COUNT
-    FROM GRAPH_NETWORK.GRAPH.ALL_EDGES_ENRICHED
-    WHERE (SOURCE_NAME ILIKE '%{safe_inst}%' OR TARGET_NAME ILIKE '%{safe_inst}%')
-    AND EDGE_TYPE IN ('Applicant_Applicant', 'Institution_Institution')
-    GROUP BY 1
-),
-org_subjects_list AS (
-    SELECT ORG_ID,
-        LISTAGG(DISTINCT MATCHED_SUBJECT_NAME, ' | ') WITHIN GROUP (ORDER BY MATCHED_SUBJECT_NAME) AS SHARED_SUBJECT_NAMES
-    FROM org_subject_edges
-    GROUP BY ORG_ID
-)
-SELECT
-    m.ORG_ID,
-    m.ORG_NAME,
-    m.ORG_CATEGORY,
-    m.PATENT_SHARED_SUBJECTS,
-    m.PATENT_STRENGTH,
-    m.PUB_SHARED_SUBJECTS,
-    m.PUB_STRENGTH,
-    m.TOTAL_SHARED_SUBJECTS,
-    m.TOTAL_STRENGTH,
-    CASE WHEN dc.COLLAB_ID IS NULL THEN TRUE ELSE FALSE END AS IS_NEW_OPPORTUNITY,
-    COALESCE(dc.COLLAB_COUNT, 0) AS COLLAB_COUNT,
-    sl.SHARED_SUBJECT_NAMES
-FROM org_matches m
-LEFT JOIN direct_collabs dc ON m.ORG_ID = dc.COLLAB_ID
-LEFT JOIN org_subjects_list sl ON m.ORG_ID = sl.ORG_ID
-WHERE m.TOTAL_SHARED_SUBJECTS > 0
-ORDER BY m.TOTAL_SHARED_SUBJECTS DESC, m.TOTAL_STRENGTH DESC
-LIMIT {top_n}
-"""
-    return run_query(sql)
-
-
-# Map common informal terms to actual QS granular subjects
-_FIELD_ALIASES = {
-    "AI": "COMPUTER SCIENCE",
-    "ARTIFICIAL INTELLIGENCE": "COMPUTER SCIENCE",
-    "MACHINE LEARNING": "COMPUTER SCIENCE",
-    "ML": "COMPUTER SCIENCE",
-    "DEEP LEARNING": "COMPUTER SCIENCE",
-    "COMPUTER SCIENCE": "COMPUTER SCIENCE",
-    "DATA SCIENCE": "DATA SCIENCE",
-    "SEMICONDUCTORS": "ENGINEERING - ELECTRICAL",
-    "SEMICONDUCTOR": "ENGINEERING - ELECTRICAL",
-    "ELECTRONICS": "ENGINEERING - ELECTRICAL",
-}
+def _field_clause(subject: str, col: str = "p.QS_SUBJECT") -> str:
+    """Build a SQL clause matching one or more QS subjects (separated by '|').
+    Supports multi-subject mapping for cross-disciplinary topics."""
+    raw = (subject or "").strip()
+    if not raw:
+        return "TRUE"
+    parts = [p.strip() for p in raw.split("|") if p.strip()]
+    terms = []
+    for p in parts:
+        mapped = _FIELD_ALIASES.get(p.upper(), p.upper())
+        terms.append(mapped.replace("'", "''"))
+    if not terms:
+        return "TRUE"
+    ors = " OR ".join(f"CONTAINS(UPPER({col}), '{t}')" for t in terms)
+    return f"({ors})"
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -427,13 +313,12 @@ def run_recommendation_flat(
       score = field_ip * (1+focus) * (0.5+0.5*recency) * category_weight * institute_bonus
     Category weights: Corporation/Government-Nonprofit 1.0, Hospital 0.8, Institute 0.6, Individual excluded.
     """
-    field = (subject or "").strip().upper()
-    field = _FIELD_ALIASES.get(field, field)
-    field_esc = field.replace("'", "''")
-    field_clause = f"CONTAINS(UPPER(p.QS_SUBJECT), '{field_esc}')" if field else "TRUE"
+    field_clause = _field_clause(subject)
     order_col = "EXI_SCORE" if existing_only else "NEW_SCORE"
+    # existing-only: existing partners with field collaboration; otherwise show all
+    # (new + existing) ranked by potential, flagged by IS_NEW_OPPORTUNITY.
     row_filter = ("IS_NEW_OPPORTUNITY = FALSE AND FCOLLAB > 0"
-                  if existing_only else "IS_NEW_OPPORTUNITY = TRUE")
+                  if existing_only else "TRUE")
 
     sql = f"""
 WITH name_map AS (
@@ -509,10 +394,7 @@ def run_titles_for_flat_orgs(org_names: tuple, subject: str = None) -> pd.DataFr
     """Fetch up to 3 recent sample titles per org (parent brand) per IP type, in the field."""
     if not org_names:
         return pd.DataFrame()
-    field = (subject or "").strip().upper()
-    field = _FIELD_ALIASES.get(field, field)
-    field_esc = field.replace("'", "''")
-    field_clause = f"CONTAINS(UPPER(p.QS_SUBJECT), '{field_esc}')" if field else "TRUE"
+    field_clause = _field_clause(subject)
     orgs_esc = ",".join("'" + str(o).replace("'", "''") + "'" for o in org_names)
     sql = f"""
 WITH name_map AS (
@@ -691,78 +573,71 @@ LIMIT {int(limit)}
     return run_query(sql)
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def build_partner_flat_graph(partner: str) -> str:
-    """PyVis graph centred on a partner: focus areas, NUS units, other collaborators."""
-    subj = flat_partner_subjects(partner)
-    units = flat_partner_nus_units(partner)
-    collab = flat_partner_collaborators(partner, limit=10)
+# JS injected into PyVis HTML: click a node to focus it + dim the rest; click empty space to reset.
+_DIM_JS = """
+try {
+  var _allNodes = nodes.get({returnType:"Object"});
+  var _orig = {}; for (var _id in _allNodes){ _orig[_id] = _allNodes[_id].color; }
+  var _active = false;
+  network.on("click", function(params){
+    if (params.nodes.length > 0){
+      _active = true;
+      var sel = params.nodes[0];
+      var keep = network.getConnectedNodes(sel); keep.push(sel);
+      for (var id in _allNodes){
+        _allNodes[id].color = (keep.indexOf(id) === -1) ? 'rgba(150,150,150,0.10)' : _orig[id];
+      }
+    } else if (_active){
+      _active = false;
+      for (var id in _allNodes){ _allNodes[id].color = _orig[id]; }
+    }
+    var upd=[]; for (var id in _allNodes){ upd.push(_allNodes[id]); }
+    nodes.update(upd);
+  });
+} catch(e) {}
+"""
 
-    net = Network(height="600px", width="100%", bgcolor="#1a1a1a",
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def build_partner_flat_graph(partner: str, view: str = "collaborators") -> str:
+    """PyVis graph centred on a partner. `view` ∈ {'subjects','units','collaborators'}."""
+    net = Network(height="540px", width="100%", bgcolor="#1a1a1a",
                   font_color="#ffffff", directed=False, notebook=False, cdn_resources="in_line")
     net.force_atlas_2based(gravity=-45, central_gravity=0.012, spring_length=140,
                            spring_strength=0.08, damping=0.4, overlap=0)
-
     net.add_node(partner, label=partner, color="#ff6b6b", size=34,
                  title=f"{partner} (recommended partner)", shape="dot")
 
-    # focus areas
-    for _, r in subj.head(6).iterrows():
-        nid = f"subj::{r['AREA']}"
-        net.add_node(nid, label=r["AREA"].title(), color="#F4B183", size=16,
-                     title=f"Focus area · {int(r['CNT'])} records", shape="square")
-        net.add_edge(partner, nid, color="#F4B183", width=1 + (r["CNT"] ** 0.3))
+    if view == "subjects":
+        for _, r in flat_partner_subjects(partner).head(8).iterrows():
+            nid = f"subj::{r['AREA']}"
+            net.add_node(nid, label=r["AREA"].title(), color="#F4B183", size=16,
+                         title=f"Focus area · {int(r['CNT'])} records", shape="square")
+            net.add_edge(partner, nid, color="#F4B183", width=1 + (r["CNT"] ** 0.3))
 
-    # NUS units (via an NUS hub)
-    if not units.empty:
-        net.add_node("NUS_HUB", label="NUS", color="#ff9933", size=24,
-                     title="National University of Singapore", shape="dot")
-        net.add_edge(partner, "NUS_HUB", color="#ff9933", width=3)
-        for _, r in units.head(8).iterrows():
-            nid = f"unit::{r['UNIT']}"
-            net.add_node(nid, label=r["UNIT"], color="#ffd27f", size=13,
-                         title=f"NUS unit · {int(r['CNT'])} joint works", shape="triangle")
-            net.add_edge("NUS_HUB", nid, color="#ffd27f", width=1 + (r["CNT"] ** 0.4))
+    elif view == "units":
+        units = flat_partner_nus_units(partner)
+        if not units.empty:
+            net.add_node("NUS_HUB", label="NUS", color="#ff9933", size=24,
+                         title="National University of Singapore", shape="dot")
+            net.add_edge(partner, "NUS_HUB", color="#ff9933", width=3)
+            for _, r in units.head(20).iterrows():
+                nid = f"unit::{r['UNIT']}"
+                net.add_node(nid, label=r["UNIT"], color="#ffd27f", size=13,
+                             title=f"NUS unit · {int(r['CNT'])} joint works", shape="triangle")
+                net.add_edge("NUS_HUB", nid, color="#ffd27f", width=1 + (r["CNT"] ** 0.4))
 
-    # other collaborators, coloured by category
-    _catcol = {"Corporation": "#ccccff", "Institute": "#33cccc",
-               "Hospital": "#9DC3E6", "Government / Non-profit": "#c9a0dc"}
-    for _, r in collab.iterrows():
-        nid = f"org::{r['ORG']}"
-        net.add_node(nid, label=r["ORG"], color=_catcol.get(r["CATEGORY"], "#D9D9D9"),
-                     size=13, title=f"{r['ORG']} ({r['CATEGORY']}) · {int(r['CNT'])} shared works")
-        net.add_edge(partner, nid, color="#888888", width=1 + (r["CNT"] ** 0.3))
+    else:  # collaborators
+        _catcol = {"Corporation": "#ccccff", "Institute": "#33cccc",
+                   "Hospital": "#9DC3E6", "Government / Non-profit": "#c9a0dc"}
+        for _, r in flat_partner_collaborators(partner, limit=25).iterrows():
+            nid = f"org::{r['ORG']}"
+            net.add_node(nid, label=r["ORG"], color=_catcol.get(r["CATEGORY"], "#D9D9D9"),
+                         size=13, title=f"{r['ORG']} ({r['CATEGORY']}) · {int(r['CNT'])} shared works")
+            net.add_edge(partner, nid, color="#888888", width=1 + (r["CNT"] ** 0.3))
 
-    return net.generate_html()
-
-
-def run_org_collaborators_query(org_ids: list) -> pd.DataFrame:
-    """Fetch all collaborators of the recommended orgs (both patents and publications)."""
-    if not org_ids:
-        return pd.DataFrame()
-    quoted = ", ".join(f"'{sql_escape(str(oid))}'" for oid in org_ids)
-    sql = f"""
-SELECT
-    SOURCE,
-    SOURCE_NAME,
-    SOURCE_TYPE,
-    SOURCE_CATEGORY,
-    SOURCE_NUS_AFFILIATED,
-    TARGET,
-    TARGET_NAME,
-    TARGET_TYPE,
-    TARGET_CATEGORY,
-    TARGET_NUS_AFFILIATED,
-    EDGE_TYPE,
-    IP_TYPE,
-    WEIGHT
-FROM GRAPH_NETWORK.GRAPH.ALL_EDGES_ENRICHED
-WHERE EDGE_TYPE IN ('Applicant_Applicant', 'Institution_Institution')
-AND (SOURCE IN ({quoted}) OR TARGET IN ({quoted}))
-ORDER BY WEIGHT DESC
-LIMIT 300
-"""
-    return run_query(sql)
+    html = net.generate_html()
+    return html.replace("return network;", _DIM_JS + "\n        return network;")
 
 
 def run_recommendation_subject_edges(
@@ -802,295 +677,6 @@ AND (SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects) OR TARGET IN (SELECT SUBJE
 AND (SOURCE IN ({quoted}) OR TARGET IN ({quoted}))
 """
     return run_query(sql)
-
-
-def run_titles_for_orgs(
-    institution: str,
-    org_ids: list,
-    subject_filter: str = None,
-    max_titles_per_org: int = 5,
-) -> pd.DataFrame:
-    """
-    Fetch representative patent/publication titles for the shared research area
-    between the institution and each recommended org.
-    Joins ALL_EDGES_ENRICHED_FLAT to INDUSTRY_AGG.PUBLIC.PAT_PUB on UID.
-    Returns up to max_titles_per_org titles per org per IP type.
-    """
-    if not org_ids:
-        return pd.DataFrame()
-
-    safe_inst = sql_escape(institution)
-    quoted = ", ".join(f"'{sql_escape(str(oid))}'" for oid in org_ids)
-    subject_clause = (
-        f"AND (e.SOURCE_NAME ILIKE '%{sql_escape(subject_filter)}%' OR e.TARGET_NAME ILIKE '%{sql_escape(subject_filter)}%')"
-        if subject_filter else ""
-    )
-
-    sql = f"""
-WITH inst_subjects AS (
-    SELECT DISTINCT
-        CASE WHEN SOURCE_NAME ILIKE '%{safe_inst}%' THEN TARGET ELSE SOURCE END AS SUBJECT_ID
-    FROM GRAPH_NETWORK.GRAPH.ALL_EDGES_ENRICHED
-    WHERE (SOURCE_NAME ILIKE '%{safe_inst}%' OR TARGET_NAME ILIKE '%{safe_inst}%')
-    AND EDGE_TYPE IN ('Applicant_Subject', 'Institute_Subject')
-),
-org_subject_uids AS (
-    SELECT DISTINCT
-        CASE WHEN e.SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects) THEN e.TARGET ELSE e.SOURCE END AS ORG_ID,
-        CASE WHEN e.SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects) THEN e.TARGET_NAME ELSE e.SOURCE_NAME END AS ORG_NAME,
-        e.IP_TYPE,
-        f.UID
-    FROM GRAPH_NETWORK.GRAPH.ALL_EDGES_ENRICHED_FLAT f
-    JOIN GRAPH_NETWORK.GRAPH.ALL_EDGES_ENRICHED e
-        ON f.SOURCE = e.SOURCE AND f.TARGET = e.TARGET AND f.EDGE_TYPE = e.EDGE_TYPE
-    WHERE e.EDGE_TYPE IN ('Applicant_Subject', 'Institute_Subject')
-    AND (e.SOURCE IN (SELECT SUBJECT_ID FROM inst_subjects) OR e.TARGET IN (SELECT SUBJECT_ID FROM inst_subjects))
-    AND (e.SOURCE IN ({quoted}) OR e.TARGET IN ({quoted}))
-    AND e.SOURCE_NAME NOT ILIKE '%{safe_inst}%'
-    AND e.TARGET_NAME NOT ILIKE '%{safe_inst}%'
-    {subject_clause}
-),
-ranked AS (
-    SELECT
-        o.ORG_ID,
-        o.ORG_NAME,
-        o.IP_TYPE,
-        p.TITLE,
-        ROW_NUMBER() OVER (PARTITION BY o.ORG_ID, o.IP_TYPE ORDER BY p.TITLE) AS rn
-    FROM org_subject_uids o
-    JOIN INDUSTRY_AGG.PUBLIC.PAT_PUB p ON o.UID = p.UID
-    WHERE p.TITLE IS NOT NULL AND p.TITLE != ''
-)
-SELECT ORG_ID, ORG_NAME, IP_TYPE, TITLE
-FROM ranked
-WHERE rn <= {max_titles_per_org}
-ORDER BY ORG_ID, IP_TYPE, rn
-"""
-    return run_query(sql)
-
-
-def generate_recommendations(
-    recs_df: pd.DataFrame,
-    institution: str,
-    subject_filter: str = None,
-    titles_df: pd.DataFrame = None,
-) -> str:
-    """Call Claude to generate written recommendations from the query results, enriched with actual titles."""
-    # Build titles lookup: {org_id: {"Patents": [...], "Publications": [...]}}
-    titles_by_org = {}
-    if titles_df is not None and not titles_df.empty:
-        for _, row in titles_df.iterrows():
-            oid = str(row["ORG_ID"])
-            ip = str(row["IP_TYPE"])
-            title = str(row["TITLE"]).strip().title()
-            if oid not in titles_by_org:
-                titles_by_org[oid] = {"Patents": [], "Publications": []}
-            if ip in titles_by_org[oid]:
-                titles_by_org[oid][ip].append(title)
-
-    rows = []
-    for _, row in recs_df.iterrows():
-        org_id = str(row["ORG_ID"])
-        tier = "🆕 New Opportunity" if row["IS_NEW_OPPORTUNITY"] else "🤝 Existing Partner"
-        org_titles = titles_by_org.get(org_id, {})
-
-        pat_titles = org_titles.get("Patents", [])
-        pub_titles = org_titles.get("Publications", [])
-
-        title_lines = ""
-        if pat_titles:
-            title_lines += f"  Sample patent titles: {'; '.join(pat_titles[:5])}\n"
-        if pub_titles:
-            title_lines += f"  Sample publication titles: {'; '.join(pub_titles[:5])}\n"
-
-        rows.append(
-            f"- {row['ORG_NAME']} ({row['ORG_CATEGORY']}) [{tier}]\n"
-            f"  Patents: {int(row['PATENT_SHARED_SUBJECTS'])} overlapping subject area(s), research alignment score {int(row['PATENT_STRENGTH'])} (higher = stronger topical overlap, NOT a co-filing count)\n"
-            f"  Publications: {int(row['PUB_SHARED_SUBJECTS'])} overlapping subject area(s), research alignment score {int(row['PUB_STRENGTH'])}\n"
-            f"  Shared subject areas: {row['SHARED_SUBJECT_NAMES']}\n"
-            f"{title_lines}"
-        )
-    data_str = "\n".join(rows)
-    subject_context = f" in {subject_filter}" if subject_filter else ""
-
-    prompt = f"""You are a research collaboration advisor at {institution}.
-
-Based on the data below, write structured recommendations for the top {len(recs_df)} industry partners for {institution}{subject_context}.
-
-CRITICAL DEFINITIONS — read carefully before writing:
-- "Research alignment score" is a topical overlap measure (how much research volume each party has in shared subject areas). It is NOT a count of co-authored papers or co-filed patents.
-- 🆕 New Opportunity = this organisation has NO prior direct collaboration with {institution}. Do NOT imply any existing co-authorship or co-filing. Frame the overlap purely as shared research territory and unexplored potential.
-- 🤝 Existing Partner = this organisation has already collaborated directly with {institution}. You may reference the depth of the existing relationship.
-
-Use the tier labels exactly as shown. Be specific and data-driven. Reference actual titles where relevant.
-Write in a professional but accessible tone for senior stakeholders.
-Do NOT add any title or heading before the recommendations. Start directly with the first --- divider.
-Use only **bold** for emphasis — do not use # or ## headings anywhere in your response.
-
-Data:
-{data_str}
-
-Format each recommendation exactly as follows (use markdown):
-
----
-**[Rank]. [Organisation Name]** — [tier label]
-
-**About:** 1-2 sentences on what the organisation does and their research focus, citing specific patent/publication titles as evidence.
-
-**Research alignment with {institution}:**
-- Patents: [X overlapping subject area(s), alignment score Y] — describe the shared research territory
-- Publications: [X overlapping subject area(s), alignment score Y] — describe the shared research territory
-
-**Why collaborate:** 1-2 sentences on the strategic rationale, framed appropriately for the tier (new opportunity = unexplored potential; existing partner = deepen or expand).
-
-**Strategic note:** One sentence on the specific next step or opportunity this partner represents.
-"""
-
-    response = client.messages.create(
-        model="claude-sonnet-4-5",
-        max_tokens=min(8000, 500 + len(recs_df) * 400),
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return response.content[0].text.strip()
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def build_recommendation_shared_subjects_graph(
-    recs_df: pd.DataFrame,
-    subject_edges_df: pd.DataFrame,
-    institution: str,
-) -> str:
-    """Graph 1: recommended orgs connected to their shared subject areas."""
-    net = Network(
-        height="600px", width="100%", bgcolor="#1a1a1a",
-        font_color="#ffffff", directed=False, notebook=False, cdn_resources="in_line",
-    )
-    net.force_atlas_2based(gravity=-50, central_gravity=0.01, spring_length=150, spring_strength=0.08, damping=0.4, overlap=0)
-
-    added_orgs = set()
-    added_subjects = set()
-
-    org_meta = {
-        str(row["ORG_ID"]): {
-            "name": str(row["ORG_NAME"]),
-            "category": str(row["ORG_CATEGORY"]),
-            "is_new": bool(row["IS_NEW_OPPORTUNITY"]),
-            "total": int(row["TOTAL_SHARED_SUBJECTS"]),
-            "strength": int(row["TOTAL_STRENGTH"]),
-        }
-        for _, row in recs_df.iterrows()
-    }
-
-    # Aggregate weights per (org, subject) pair so each subject is one node
-    agg = (
-        subject_edges_df
-        .groupby(["ORG_ID", "ORG_NAME", "SUBJECT_ID", "SUBJECT_NAME"], as_index=False)["WEIGHT"]
-        .sum()
-    )
-
-    for _, row in agg.iterrows():
-        org_id = str(row["ORG_ID"])
-        org_name = str(row["ORG_NAME"])
-        subj_id = str(row["SUBJECT_ID"])
-        subj_name = str(row["SUBJECT_NAME"])
-        weight = float(row["WEIGHT"])
-
-        meta = org_meta.get(org_id, {})
-
-        if org_id not in added_orgs:
-            color = "#ff6b6b" if meta.get("is_new") else "#9DC3E6"
-            tier = "🆕 New Opportunity" if meta.get("is_new") else "🤝 Existing Partner"
-            net.add_node(
-                org_id,
-                label=org_name,
-                title=f"{org_name}\n{tier}\nCategory: {meta.get('category','')}\nShared subjects: {meta.get('total',0)}\nTotal strength: {meta.get('strength',0)}",
-                color=color,
-                value=meta.get("total", 1) * 3,
-            )
-            added_orgs.add(org_id)
-
-        if subj_id not in added_subjects:
-            net.add_node(
-                subj_id,
-                label=subj_name,
-                title=f"Subject: {subj_name}",
-                color="#F4B183",
-                value=2,
-            )
-            added_subjects.add(subj_id)
-
-        net.add_edge(org_id, subj_id, value=weight, title=f"Strength: {weight:.0f}")
-
-    return net.generate_html(notebook=False)
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def build_recommendation_network_graph(
-    recs_df: pd.DataFrame,
-    collaborators_df: pd.DataFrame,
-) -> str:
-    """Graph 2: recommended orgs and their existing collaborator network."""
-    net = Network(
-        height="600px", width="100%", bgcolor="#1a1a1a",
-        font_color="#ffffff", directed=False, notebook=False, cdn_resources="in_line",
-    )
-    net.force_atlas_2based(gravity=-50, central_gravity=0.01, spring_length=150, spring_strength=0.08, damping=0.4, overlap=0)
-
-    org_meta = {
-        str(row["ORG_ID"]): {
-            "name": str(row["ORG_NAME"]),
-            "is_new": bool(row["IS_NEW_OPPORTUNITY"]),
-        }
-        for _, row in recs_df.iterrows()
-    }
-    rec_ids = set(org_meta.keys())
-    added_nodes = set()
-
-    # Add recommended org nodes first
-    for org_id, meta in org_meta.items():
-        color = "#ff6b6b" if meta["is_new"] else "#9DC3E6"
-        tier = "🆕 New Opportunity" if meta["is_new"] else "🤝 Existing Partner"
-        net.add_node(
-            org_id,
-            label=meta["name"],
-            title=f"{meta['name']}\n{tier}",
-            color=color,
-            value=15,
-        )
-        added_nodes.add(org_id)
-
-    # Add collaborator edges
-    for _, row in collaborators_df.iterrows():
-        src = str(row["SOURCE"])
-        tgt = str(row["TARGET"])
-        src_name = str(row["SOURCE_NAME"])
-        tgt_name = str(row["TARGET_NAME"])
-        src_cat = str(row["SOURCE_CATEGORY"])
-        tgt_cat = str(row["TARGET_CATEGORY"])
-        weight = float(row["WEIGHT"])
-        ip_type = str(row["IP_TYPE"])
-
-        if src not in added_nodes:
-            net.add_node(
-                src, label=src_name,
-                title=f"{src_name}\nCategory: {src_cat}",
-                color="#33cccc" if src not in rec_ids else "#ff6b6b",
-                value=5,
-            )
-            added_nodes.add(src)
-
-        if tgt not in added_nodes:
-            net.add_node(
-                tgt, label=tgt_name,
-                title=f"{tgt_name}\nCategory: {tgt_cat}",
-                color="#33cccc" if tgt not in rec_ids else "#9DC3E6",
-                value=5,
-            )
-            added_nodes.add(tgt)
-
-        net.add_edge(src, tgt, value=weight, title=f"Strength: {weight:.0f}\n{ip_type}")
-
-    return net.generate_html(notebook=False)
 
 
 def run_similar_no_collab_subject_edges(
@@ -1486,13 +1072,17 @@ Return a JSON object with the following fields:
   "top_n_nodes": <integer or null>,     // for "top N partners" in standard mode, set to N. Leave null otherwise.
   "top_n_results": <integer or null>,   // for "similar_no_collab" and "recommendation" mode: how many results to return.
                                         // Leave null unless the user asks for a specific number (e.g. "top 5").
-  "subject_filter": "<string or null>", // scope the search to a specific QS subject area.
-                                        // MUST exactly match one of: [AVAILABLE_SUBJECTS]
-                                        // Map natural language to the correct QS subject name e.g.:
-                                        //   "AI", "artificial intelligence", "machine learning" → "COMPUTER SCIENCE & INFORMATION SYSTEMS" or "DATA SCIENCE"
-                                        //   "biomedical", "life sciences" → "BIOLOGICAL SCIENCES" or "MEDICINE"
-                                        //   "engineering" → pick the most specific match e.g. "ENGINEERING - ELECTRICAL & ELECTRONIC"
-                                        //   If ambiguous, pick the closest match or leave null for all subjects.
+  "subject_filter": "<string or null>", // scope the search to QS subject area(s). Each subject MUST match one of: [AVAILABLE_SUBJECTS]
+                                        // Map natural language to the QS subject name(s), e.g.:
+                                        //   "AI", "artificial intelligence", "machine learning" → "COMPUTER SCIENCE & INFORMATION SYSTEMS"
+                                        //   "biomedical", "life sciences" → "BIOLOGICAL SCIENCES"
+                                        //   "engineering" → the most specific match e.g. "ENGINEERING - ELECTRICAL & ELECTRONIC"
+                                        // For "recommendation" queries ONLY, a cross-disciplinary topic may map to
+                                        // MULTIPLE subjects joined by " | " (max 3), e.g.:
+                                        //   "fintech" → "COMPUTER SCIENCE & INFORMATION SYSTEMS | ACCOUNTING & FINANCE"
+                                        //   "biotech" → "BIOLOGICAL SCIENCES | MEDICINE | CHEMISTRY"
+                                        // For graph_query, always use a SINGLE subject.
+                                        // If ambiguous, pick the closest match or leave null for all subjects.
   "existing_only": <boolean>,            // for "recommendation" mode only.
                                         // true  = user wants EXISTING collaborators only ("collaborate most", "top collaborators", "who works with NUS")
                                         // false = user wants potential/suggested partners ("recommend", "suggest", "potential partners")
@@ -1740,98 +1330,6 @@ has_queried = fs.get("has_queried", False)
 
 
 # -----------------------------
-# Stage 1 beta: flat-table recommendation scoring (self-contained, isolated)
-# -----------------------------
-with st.expander("⚡ New scoring engine (beta) — flat-table recommendations", expanded=False):
-    st.caption(
-        "Subject-conditioned scoring on PAT_PUB + ENTITIES. "
-        "Category weights: Corporation / Government 1.0 · Hospital 0.8 · Institute 0.6 · Individuals excluded. "
-        "Score = field IP × (1+focus) × recency × category weight × academic-ties bonus."
-    )
-    bc1, bc2, bc3 = st.columns([3, 2, 1])
-    with bc1:
-        beta_subject = st.text_input(
-            "Research field (e.g. AI, semiconductors, medicine, data science)",
-            value="AI", key="beta_subject",
-        )
-    with bc2:
-        beta_mode = st.radio(
-            "Mode", ["New opportunities", "Existing partners"],
-            horizontal=True, key="beta_mode",
-        )
-    with bc3:
-        beta_topn = st.number_input("Top N", min_value=5, max_value=50, value=15, step=5, key="beta_topn")
-
-    if st.button("Run new scoring", key="beta_run", type="primary"):
-        with st.spinner("Scoring on Snowflake…"):
-            beta_df = run_recommendation_flat(
-                subject=beta_subject,
-                existing_only=(beta_mode == "Existing partners"),
-                top_n=int(beta_topn),
-            )
-        st.session_state["beta_result"] = beta_df.to_dict("records") if not beta_df.empty else []
-        st.session_state["beta_meta"] = {"subject": beta_subject, "mode": beta_mode}
-
-    _beta_res = st.session_state.get("beta_result")
-    if _beta_res is not None:
-        _bdf = pd.DataFrame(_beta_res)
-        _meta = st.session_state.get("beta_meta", {})
-        if _bdf.empty:
-            st.info("No matching organisations found. Try a broader or differently-worded field.")
-        else:
-            _existing = _meta.get("mode") == "Existing partners"
-            if _existing:
-                _cols = ["ORG_NAME", "ORG_CATEGORY", "MATCH_SCORE", "FCOLLAB",
-                         "FIELD_CNT", "FOCUS", "RECENT", "N_INST"]
-                _names = ["Organisation", "Category", "Match /100", "NUS collabs (field)",
-                          "Field IP", "Focus", "Recency", "Academic ties"]
-            else:
-                _cols = ["ORG_NAME", "ORG_CATEGORY", "MATCH_SCORE", "FIELD_CNT",
-                         "FOCUS", "RECENT", "N_INST"]
-                _names = ["Organisation", "Category", "Match /100", "Field IP",
-                          "Focus", "Recency", "Academic ties"]
-            _show = _bdf[_cols].copy()
-            _show.columns = _names
-            _show.index = range(1, len(_show) + 1)
-            st.markdown(f"**{_meta.get('mode','')}** for NUS in _{_meta.get('subject','')}_ — ranked by match score.")
-            st.dataframe(_show, use_container_width=True)
-
-            _wc1, _wc2, _wc3 = st.columns([1, 1, 3])
-            with _wc1:
-                st.download_button(
-                    "⬇️ Download CSV", data=_show.to_csv().encode("utf-8"),
-                    file_name="recommendations_beta.csv", mime="text/csv", key="beta_csv",
-                )
-            with _wc2:
-                if st.button("📝 Generate write-up", key="beta_writeup_btn"):
-                    _wu_df = _bdf.head(10)
-                    with st.spinner("Fetching titles & generating write-up…"):
-                        _titles = run_titles_for_flat_orgs(
-                            tuple(_wu_df["ORG_NAME"].tolist()), _meta.get("subject"))
-                        _rec_text = generate_recommendations_flat(
-                            _wu_df, _meta.get("subject"), _existing, titles_df=_titles)
-                    st.session_state["beta_writeup"] = _rec_text
-                    if len(_bdf) > 10:
-                        st.session_state["beta_writeup"] = (
-                            f"_Detailed write-ups for the **top 10** of **{len(_bdf)}** ranked partners._\n\n---\n\n"
-                            + _rec_text
-                        )
-
-            _wu = st.session_state.get("beta_writeup")
-            if _wu:
-                st.markdown("---")
-                st.markdown(_wu)
-                _docx = build_recommendation_docx(
-                    _wu, "National University of Singapore", _meta.get("subject"))
-                st.download_button(
-                    "⬇️ Download Report (Word)", data=_docx,
-                    file_name="recommendations_report.docx",
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    key="beta_docx",
-                )
-
-
-# -----------------------------
 # Two column layout
 # -----------------------------
 chat_col, graph_col = st.columns([2, 3], gap="large")
@@ -1886,8 +1384,10 @@ with graph_col:
             else:
                 _c = ["ORG_NAME", "ORG_CATEGORY", "MATCH_SCORE", "FIELD_CNT", "FOCUS", "RECENT", "N_INST"]
                 _n = ["Organisation", "Category", "Match /100", "Field IP", "Focus", "Recency", "Academic ties"]
+            _status = recs_df["IS_NEW_OPPORTUNITY"].map(lambda x: "🆕 New" if x else "🤝 Existing")
             _sdf = recs_df[_c].copy()
             _sdf.columns = _n
+            _sdf.insert(2, "Opportunity", _status.values)
             _sdf.index = range(1, len(_sdf) + 1)
             st.caption("Click a row to explore that partner's focus areas, NUS-unit collaborations, and other partners.")
             _sel = st.dataframe(
@@ -1922,18 +1422,30 @@ with graph_col:
                     _units = flat_partner_nus_units(_partner)
                     _collab = flat_partner_collaborators(_partner, limit=15)
 
-                with st.expander("🌐 Partner network — focus areas, NUS units, other collaborators", expanded=True):
-                    components.html(build_partner_flat_graph(_partner), height=620, scrolling=True)
-                    st.markdown(
-                        "<span style='font-size:13px'>"
-                        "<span style='color:#ff6b6b'>■</span> Partner &nbsp;|&nbsp; "
-                        "<span style='color:#F4B183'>■</span> Focus area &nbsp;|&nbsp; "
-                        "<span style='color:#ff9933'>■</span> NUS &nbsp;|&nbsp; "
-                        "<span style='color:#ffd27f'>■</span> NUS unit &nbsp;|&nbsp; "
-                        "<span style='color:#33cccc'>■</span> Institute &nbsp;|&nbsp; "
-                        "<span style='color:#ccccff'>■</span> Corporation</span>",
-                        unsafe_allow_html=True,
-                    )
+                with st.expander("🌐 Partner network — click a node to focus, click empty space to reset", expanded=True):
+                    _gt1, _gt2, _gt3 = st.tabs(["🎯 Focus areas", "🏛 NUS units", "🤝 Other collaborators"])
+                    with _gt1:
+                        components.html(build_partner_flat_graph(_partner, "subjects"), height=560, scrolling=True)
+                        st.markdown(
+                            "<span style='font-size:13px'><span style='color:#ff6b6b'>■</span> Partner &nbsp;|&nbsp; "
+                            "<span style='color:#F4B183'>■</span> Focus area</span>", unsafe_allow_html=True)
+                    with _gt2:
+                        if _units.empty:
+                            st.info("No NUS-unit collaborations found — this partner hasn't co-published or co-filed with a NUS unit.")
+                        else:
+                            components.html(build_partner_flat_graph(_partner, "units"), height=560, scrolling=True)
+                            st.markdown(
+                                "<span style='font-size:13px'><span style='color:#ff6b6b'>■</span> Partner &nbsp;|&nbsp; "
+                                "<span style='color:#ff9933'>■</span> NUS &nbsp;|&nbsp; "
+                                "<span style='color:#ffd27f'>■</span> NUS unit</span>", unsafe_allow_html=True)
+                    with _gt3:
+                        components.html(build_partner_flat_graph(_partner, "collaborators"), height=560, scrolling=True)
+                        st.markdown(
+                            "<span style='font-size:13px'><span style='color:#ff6b6b'>■</span> Partner &nbsp;|&nbsp; "
+                            "<span style='color:#33cccc'>■</span> Institute &nbsp;|&nbsp; "
+                            "<span style='color:#ccccff'>■</span> Corporation &nbsp;|&nbsp; "
+                            "<span style='color:#9DC3E6'>■</span> Hospital &nbsp;|&nbsp; "
+                            "<span style='color:#c9a0dc'>■</span> Gov / Non-profit</span>", unsafe_allow_html=True)
 
                 _da, _db = st.columns(2)
                 with _da:
@@ -1961,147 +1473,6 @@ with graph_col:
                     )
                 else:
                     st.caption("—")
-        else:
-            recs_df = pd.DataFrame(rec_data["recs_df"])
-            institution = rec_data["institution"]
-            subject_filter = rec_data.get("subject_filter")
-            existing_only = rec_data.get("existing_only", False)
-            org_ids = recs_df["ORG_ID"].tolist()
-
-            subject_context = f" in {subject_filter}" if subject_filter else ""
-            if existing_only:
-                st.markdown(f"Top industry partners **actively collaborating** with **{institution.title()}**{subject_context}, ranked by collaboration count.")
-            else:
-                st.markdown(f"Recommended industry partners for **{institution.title()}**{subject_context}.")
-
-            # ── SUMMARY TABLE (shown first; click a row to explore its network) ─
-            st.subheader("📋 Summary")
-            summary_df = recs_df[[
-                "ORG_NAME",
-                "IS_NEW_OPPORTUNITY", "COLLAB_COUNT",
-                "PATENT_SHARED_SUBJECTS", "PATENT_STRENGTH",
-                "PUB_SHARED_SUBJECTS", "PUB_STRENGTH",
-                "TOTAL_SHARED_SUBJECTS", "TOTAL_STRENGTH",
-            ]].copy()
-            summary_df.columns = [
-                "Organisation",
-                "New Opportunity", "Existing Collaborations",
-                "Patent Shared Subjects", "Patent Count",
-                "Publication Shared Subjects", "Publication Count",
-                "Total Shared Subjects", "Total Count",
-            ]
-            summary_df["Existing Collaborations"] = summary_df.apply(
-                lambda r: int(r["Existing Collaborations"]) if not r["New Opportunity"] else "—",
-                axis=1,
-            )
-            summary_df.index = range(1, len(summary_df) + 1)
-
-            st.caption("Click a row to view that company's partner network.")
-            sel = st.dataframe(
-                summary_df,
-                on_select="rerun",
-                selection_mode="single-row",
-                use_container_width=True,
-            )
-
-            col1, col2, col3 = st.columns([1, 1, 4])
-            with col1:
-                st.download_button(
-                    label="⬇️ Download CSV",
-                    data=summary_df.to_csv().encode("utf-8"),
-                    file_name="recommendations.csv",
-                    mime="text/csv",
-                )
-            with col2:
-                rec_text = rec_data.get("rec_text", "")
-                if rec_text:
-                    docx_bytes = build_recommendation_docx(rec_text, institution, subject_filter)
-                    st.download_button(
-                        label="⬇️ Download Report",
-                        data=docx_bytes,
-                        file_name="recommendations_report.docx",
-                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    )
-
-            # ── DETERMINE SELECTED ORG ────────────────────────────────────────
-            selected_org_id = None
-            selected_org_name = None
-            if sel.selection.rows:
-                idx = sel.selection.rows[0]
-                selected_org_row = recs_df.iloc[idx]
-                selected_org_id = str(selected_org_row["ORG_ID"])
-                selected_org_name = str(selected_org_row["ORG_NAME"])
-                filter_recs_df = recs_df[recs_df["ORG_ID"].astype(str) == selected_org_id]
-                filter_org_ids = [selected_org_id]
-            else:
-                filter_recs_df = recs_df
-                filter_org_ids = org_ids
-
-            # ── SUPPORTING CHARTS (expander, auto-opens when a row is selected) ─
-            chart_label = (
-                f"📊 Partner networks — {selected_org_name}"
-                if selected_org_name else "📊 View supporting charts (all partners)"
-            )
-            with st.expander(chart_label, expanded=selected_org_id is not None):
-                if selected_org_name:
-                    st.info(f"Showing networks for **{selected_org_name}**. Click another row to switch, or deselect to see all partners.")
-
-                tab1, tab2 = st.tabs(["📚 Shared Research Subjects", "🌐 Partner Industry Network"])
-
-                with tab1:
-                    st.markdown(
-                        "<span style='font-size:15px'>"
-                        "<span style='color:#ff6b6b'>■</span> New opportunity &nbsp;|&nbsp; "
-                        "<span style='color:#9DC3E6'>■</span> Existing partner &nbsp;|&nbsp; "
-                        "<span style='color:#F4B183'>■</span> Shared research subjects"
-                        "</span>",
-                        unsafe_allow_html=True,
-                    )
-                    with st.spinner("Loading shared subjects graph…"):
-                        subj_edges_df = run_recommendation_subject_edges(institution, filter_org_ids, subject_filter)
-                    if subj_edges_df.empty:
-                        st.info("No subject edges found.")
-                    else:
-                        html1 = build_recommendation_shared_subjects_graph(filter_recs_df, subj_edges_df, institution)
-                        html1 = inject_layout_controls(inject_png_download(html1, "shared_subjects.png"))
-                        components.html(html1, height=620, scrolling=True)
-                        col1, col2 = st.columns([1, 5])
-                        with col1:
-                            st.download_button(
-                                label="⬇️ Download CSV",
-                                data=subj_edges_df[["ORG_NAME", "SUBJECT_NAME", "IP_TYPE", "WEIGHT"]].to_csv(index=False).encode("utf-8"),
-                                file_name="shared_subjects.csv",
-                                mime="text/csv",
-                                key="dl_shared_subjects",
-                            )
-
-                with tab2:
-                    st.markdown(
-                        "<span style='font-size:15px'>"
-                        "<span style='color:#ff6b6b'>■</span> New opportunity &nbsp;|&nbsp; "
-                        "<span style='color:#9DC3E6'>■</span> Existing partner &nbsp;|&nbsp; "
-                        "<span style='color:#33cccc'>■</span> Their existing collaborators"
-                        "</span>",
-                        unsafe_allow_html=True,
-                    )
-                    with st.spinner("Loading industry network graph…"):
-                        collab_df = run_org_collaborators_query(filter_org_ids)
-                    if collab_df.empty:
-                        st.info("No collaborator data found.")
-                    else:
-                        html2 = build_recommendation_network_graph(filter_recs_df, collab_df)
-                        html2 = inject_layout_controls(inject_png_download(html2, "industry_network.png"))
-                        components.html(html2, height=620, scrolling=True)
-                        col1, col2 = st.columns([1, 5])
-                        with col1:
-                            st.download_button(
-                                label="⬇️ Download CSV",
-                                data=collab_df[["SOURCE_NAME", "SOURCE_CATEGORY", "TARGET_NAME", "TARGET_CATEGORY", "EDGE_TYPE", "IP_TYPE", "WEIGHT"]].to_csv(index=False).encode("utf-8"),
-                                file_name="industry_network.csv",
-                                mime="text/csv",
-                                key="dl_industry_network",
-                            )
-
     elif query_mode == "similar_no_collab":
         # --- Similar interests, no prior collaboration mode ---
         if not search_term.strip():
