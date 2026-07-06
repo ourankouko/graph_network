@@ -491,7 +491,132 @@ WHERE {row_filter}
 ORDER BY {order_col} DESC
 LIMIT {int(top_n)}
 """
+    df = run_query(sql)
+    if not df.empty:
+        _sc = "EXI_SCORE" if existing_only else "NEW_SCORE"
+        _mx = df[_sc].max()
+        # normalise to 0–100 relative to the strongest match in this result set
+        df["MATCH_SCORE"] = ((100 * df[_sc] / _mx).round().astype(int) if _mx else 0)
+    return df
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def run_titles_for_flat_orgs(org_names: tuple, subject: str = None) -> pd.DataFrame:
+    """Fetch up to 3 recent sample titles per org (parent brand) per IP type, in the field."""
+    if not org_names:
+        return pd.DataFrame()
+    field = (subject or "").strip().upper()
+    field = _FIELD_ALIASES.get(field, field)
+    field_esc = field.replace("'", "''")
+    field_clause = f"CONTAINS(UPPER(p.QS_SUBJECT), '{field_esc}')" if field else "TRUE"
+    orgs_esc = ",".join("'" + str(o).replace("'", "''") + "'" for o in org_names)
+    sql = f"""
+WITH name_map AS (
+    SELECT DISTINCT TRIM(UPPER(n.VALUE::STRING)) AS NNAME, PARENT_BRAND
+    FROM INDUSTRY_AGG.PUBLIC.ENTITIES,
+         LATERAL FLATTEN(INPUT => SPLIT(
+            COALESCE(NORMALIZED_NAMES_PAT,'') || '|' || COALESCE(NORMALIZED_NAMES_PUB,''), '|')) n
+    WHERE PARENT_BRAND IN ({orgs_esc}) AND TRIM(n.VALUE::STRING) <> ''
+),
+matched AS (
+    SELECT m.PARENT_BRAND AS ORG_NAME, p.IP_TYPE, p.TITLE,
+        ROW_NUMBER() OVER (PARTITION BY m.PARENT_BRAND, p.IP_TYPE
+                           ORDER BY p.APPLICATION_PUBLICATION_YEAR DESC) AS rn
+    FROM INDUSTRY_AGG.PUBLIC.PAT_PUB p,
+         LATERAL FLATTEN(INPUT => SPLIT(p.NORMALIZED_NAMES_CONCAT, '|')) f
+    JOIN name_map m ON TRIM(UPPER(f.VALUE::STRING)) = m.NNAME
+    WHERE {field_clause} AND p.TITLE IS NOT NULL AND p.TITLE <> ''
+)
+SELECT ORG_NAME, IP_TYPE, TITLE FROM matched WHERE rn <= 3 ORDER BY ORG_NAME, IP_TYPE, rn
+"""
     return run_query(sql)
+
+
+def generate_recommendations_flat(recs_df, subject=None, existing_only=False, titles_df=None):
+    """Write recommendations from the flat-model results, framed around the new signals."""
+    titles_by_org = {}
+    if titles_df is not None and not titles_df.empty:
+        for _, row in titles_df.iterrows():
+            oid = str(row["ORG_NAME"]); ip = str(row["IP_TYPE"])
+            t = str(row["TITLE"]).strip().title()
+            titles_by_org.setdefault(oid, {"Patents": [], "Publications": []})
+            if ip in titles_by_org[oid]:
+                titles_by_org[oid][ip].append(t)
+
+    rows = []
+    for _, r in recs_df.iterrows():
+        org = str(r["ORG_NAME"])
+        tier = "🆕 New Opportunity" if r["IS_NEW_OPPORTUNITY"] else "🤝 Existing Partner"
+        ot = titles_by_org.get(org, {})
+        pat, pub = ot.get("Patents", []), ot.get("Publications", [])
+        tl = ""
+        if pat:
+            tl += f"  Sample patent titles: {'; '.join(pat[:3])}\n"
+        if pub:
+            tl += f"  Sample publication titles: {'; '.join(pub[:3])}\n"
+        focus_pct = int(round(float(r["FOCUS"]) * 100))
+        recent_pct = int(round(float(r["RECENT"]) * 100))
+        collab_line = ("" if r["IS_NEW_OPPORTUNITY"]
+                       else f"  Existing NUS collaborations in this field: {int(r['FCOLLAB'])} joint works\n")
+        rows.append(
+            f"- {org} ({r['ORG_CATEGORY']}) [{tier}]\n"
+            f"  Match score: {int(r['MATCH_SCORE'])}/100\n"
+            f"  Field activity: {int(r['FIELD_CNT'])} patents/publications in this field\n"
+            f"  Research focus: {focus_pct}% of their total output is in this field\n"
+            f"  Recency: {recent_pct}% of their field work is from the last 3 years\n"
+            f"  Academic track record: co-published / co-filed with {int(r['N_INST'])} distinct research institutes\n"
+            f"{collab_line}{tl}"
+        )
+    data_str = "\n".join(rows)
+    subject_context = f" in {subject}" if subject else ""
+    mode_desc = ("existing industry partners actively collaborating with NUS" if existing_only
+                 else "recommended industry partners for NUS")
+    signals_extra = ("- Existing collaboration: [describe the current NUS relationship in this field]\n"
+                     if existing_only else "")
+
+    prompt = f"""You are a research collaboration advisor at the National University of Singapore (NUS).
+
+Write structured recommendations for the top {len(recs_df)} {mode_desc}{subject_context}.
+
+CRITICAL DEFINITIONS — read carefully before writing:
+- "Match score" (0–100) is a composite ranking of collaboration potential for THIS field; higher = stronger fit, 100 = best-matched partner in this search. It is NOT a count of anything.
+- "Field activity" = how many patents/publications the organisation has in this subject (their own output).
+- "Research focus" = the share of their entire portfolio that is in this field (specialists score high).
+- "Recency" = the share of their field work from the last 3 years (currently-active orgs score high).
+- "Academic track record" = how many research institutes they have co-published or co-filed patents with — a proxy for willingness to work with academia.
+- 🆕 New Opportunity = NO prior direct collaboration with NUS. Do NOT imply any existing joint work — frame overlap purely as unexplored potential.
+- 🤝 Existing Partner = already collaborates with NUS; you may reference the depth of the relationship.
+
+Use the tier labels exactly as shown. Be specific and data-driven; cite the sample titles as evidence of what they actually work on.
+Write in a professional but accessible tone for senior stakeholders.
+Do NOT add any title or heading before the recommendations. Start directly with the first --- divider.
+Use only **bold** for emphasis — no # or ## headings anywhere.
+
+Data:
+{data_str}
+
+Format each recommendation exactly as follows (markdown):
+
+---
+**[Rank]. [Organisation Name]** — [tier label] · Match [score]/100
+
+**About:** 1-2 sentences on what the organisation does and their research focus, citing specific titles as evidence.
+
+**Why they rank here:**
+- Field activity: [N works in this field] — describe their footprint
+- Focus & recency: [how concentrated in this field, and how current their work is]
+- Academic track record: [their history of collaborating with research institutes]
+{signals_extra.rstrip()}
+**Why collaborate:** 1-2 sentences on the strategic rationale, framed for the tier (new = untapped potential; existing = deepen or expand).
+
+**Strategic note:** One sentence on the specific next step this partner represents.
+"""
+    response = client.messages.create(
+        model="claude-sonnet-4-5",
+        max_tokens=min(8000, 500 + len(recs_df) * 400),
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return response.content[0].text.strip()
 
 
 def run_org_collaborators_query(org_ids: list) -> pd.DataFrame:
@@ -1243,7 +1368,7 @@ Return a JSON object with the following fields:
                                         // For "top N" requests: set max_edges=300 and top_n_nodes=N instead.
   "top_n_nodes": <integer or null>,     // for "top N partners" in standard mode, set to N. Leave null otherwise.
   "top_n_results": <integer or null>,   // for "similar_no_collab" and "recommendation" mode: how many results to return.
-                                        // Default is 3 for recommendations, 20 for similar_no_collab if not specified.
+                                        // Leave null unless the user asks for a specific number (e.g. "top 5").
   "subject_filter": "<string or null>", // scope the search to a specific QS subject area.
                                         // MUST exactly match one of: [AVAILABLE_SUBJECTS]
                                         // Map natural language to the correct QS subject name e.g.:
@@ -1537,18 +1662,56 @@ with st.expander("⚡ New scoring engine (beta) — flat-table recommendations",
         if _bdf.empty:
             st.info("No matching organisations found. Try a broader or differently-worded field.")
         else:
-            _score_col = "EXI_SCORE" if _meta.get("mode") == "Existing partners" else "NEW_SCORE"
-            _show = _bdf[["ORG_NAME", "ORG_CATEGORY", "FIELD_CNT", "FCOLLAB",
-                          "FOCUS", "RECENT", "N_INST", _score_col]].copy()
-            _show.columns = ["Organisation", "Category", "Field IP", "NUS collabs (field)",
-                             "Focus", "Recency", "Academic ties", "Score"]
+            _existing = _meta.get("mode") == "Existing partners"
+            if _existing:
+                _cols = ["ORG_NAME", "ORG_CATEGORY", "MATCH_SCORE", "FCOLLAB",
+                         "FIELD_CNT", "FOCUS", "RECENT", "N_INST"]
+                _names = ["Organisation", "Category", "Match /100", "NUS collabs (field)",
+                          "Field IP", "Focus", "Recency", "Academic ties"]
+            else:
+                _cols = ["ORG_NAME", "ORG_CATEGORY", "MATCH_SCORE", "FIELD_CNT",
+                         "FOCUS", "RECENT", "N_INST"]
+                _names = ["Organisation", "Category", "Match /100", "Field IP",
+                          "Focus", "Recency", "Academic ties"]
+            _show = _bdf[_cols].copy()
+            _show.columns = _names
             _show.index = range(1, len(_show) + 1)
-            st.markdown(f"**{_meta.get('mode','')}** for NUS in _{_meta.get('subject','')}_ — ranked by score.")
+            st.markdown(f"**{_meta.get('mode','')}** for NUS in _{_meta.get('subject','')}_ — ranked by match score.")
             st.dataframe(_show, use_container_width=True)
-            st.download_button(
-                "⬇️ Download CSV", data=_show.to_csv().encode("utf-8"),
-                file_name="recommendations_beta.csv", mime="text/csv", key="beta_csv",
-            )
+
+            _wc1, _wc2, _wc3 = st.columns([1, 1, 3])
+            with _wc1:
+                st.download_button(
+                    "⬇️ Download CSV", data=_show.to_csv().encode("utf-8"),
+                    file_name="recommendations_beta.csv", mime="text/csv", key="beta_csv",
+                )
+            with _wc2:
+                if st.button("📝 Generate write-up", key="beta_writeup_btn"):
+                    _wu_df = _bdf.head(10)
+                    with st.spinner("Fetching titles & generating write-up…"):
+                        _titles = run_titles_for_flat_orgs(
+                            tuple(_wu_df["ORG_NAME"].tolist()), _meta.get("subject"))
+                        _rec_text = generate_recommendations_flat(
+                            _wu_df, _meta.get("subject"), _existing, titles_df=_titles)
+                    st.session_state["beta_writeup"] = _rec_text
+                    if len(_bdf) > 10:
+                        st.session_state["beta_writeup"] = (
+                            f"_Detailed write-ups for the **top 10** of **{len(_bdf)}** ranked partners._\n\n---\n\n"
+                            + _rec_text
+                        )
+
+            _wu = st.session_state.get("beta_writeup")
+            if _wu:
+                st.markdown("---")
+                st.markdown(_wu)
+                _docx = build_recommendation_docx(
+                    _wu, "National University of Singapore", _meta.get("subject"))
+                st.download_button(
+                    "⬇️ Download Report (Word)", data=_docx,
+                    file_name="recommendations_report.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    key="beta_docx",
+                )
 
 
 # -----------------------------
@@ -1587,6 +1750,47 @@ with graph_col:
         rec_data = fs.get("recommendation_data")
         if not rec_data:
             st.info("Ask the AI assistant for recommendations — try: _'Recommend industry partners for NUS in AI'_")
+        elif rec_data.get("flat"):
+            # ── Flat-model recommendation view (new scoring engine) ──
+            recs_df = pd.DataFrame(rec_data["recs_df"])
+            institution = rec_data["institution"]
+            subject_filter = rec_data.get("subject_filter")
+            existing_only = rec_data.get("existing_only", False)
+            subject_context = f" in {subject_filter}" if subject_filter else ""
+            if existing_only:
+                st.markdown(f"Top industry partners **actively collaborating** with **NUS**{subject_context}, ranked by match score.")
+            else:
+                st.markdown(f"Recommended industry partners for **NUS**{subject_context}, ranked by match score.")
+
+            st.subheader("📋 Summary")
+            if existing_only:
+                _c = ["ORG_NAME", "ORG_CATEGORY", "MATCH_SCORE", "FCOLLAB", "FIELD_CNT", "FOCUS", "RECENT", "N_INST"]
+                _n = ["Organisation", "Category", "Match /100", "NUS collabs (field)", "Field IP", "Focus", "Recency", "Academic ties"]
+            else:
+                _c = ["ORG_NAME", "ORG_CATEGORY", "MATCH_SCORE", "FIELD_CNT", "FOCUS", "RECENT", "N_INST"]
+                _n = ["Organisation", "Category", "Match /100", "Field IP", "Focus", "Recency", "Academic ties"]
+            _sdf = recs_df[_c].copy()
+            _sdf.columns = _n
+            _sdf.index = range(1, len(_sdf) + 1)
+            st.dataframe(_sdf, use_container_width=True)
+
+            _rcol1, _rcol2, _rcol3 = st.columns([1, 1, 4])
+            with _rcol1:
+                st.download_button(
+                    "⬇️ Download CSV", data=_sdf.to_csv().encode("utf-8"),
+                    file_name="recommendations.csv", mime="text/csv", key="rec_flat_csv",
+                )
+            with _rcol2:
+                _rt = rec_data.get("rec_text", "")
+                if _rt:
+                    _dx = build_recommendation_docx(_rt, institution, subject_filter)
+                    st.download_button(
+                        "⬇️ Download Report", data=_dx,
+                        file_name="recommendations_report.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        key="rec_flat_docx",
+                    )
+            st.caption("Full write-up is shown in the chat panel on the left.")
         else:
             recs_df = pd.DataFrame(rec_data["recs_df"])
             institution = rec_data["institution"]
@@ -2006,68 +2210,57 @@ if submitted and user_input.strip():
                 })
 
             elif response_type == "recommendation":
-                # --- Recommendation mode — fetch data, generate written recs ---
+                # --- Recommendation mode (flat model on PAT_PUB + ENTITIES) ---
                 WRITE_UP_LIMIT = 10  # max orgs with detailed AI write-ups
-                search_term_val = parsed.get("search_term", "NATIONAL UNIVERSITY OF SINGAPORE") or "NATIONAL UNIVERSITY OF SINGAPORE"
                 subject_val = parsed.get("subject_filter")
-                # Only use category if explicitly specified by user, otherwise show all
-                category_val = parsed.get("category") or None
                 existing_only = bool(parsed.get("existing_only", False))
                 # existing_only queries expect more results by default (show the landscape)
-                default_n = 10 if existing_only else 3
+                default_n = 15 if existing_only else 10
                 top_n_val = int(parsed.get("top_n_results") or default_n)
 
-                with st.spinner("Fetching partner data from Snowflake…"):
-                    recs_df = run_recommendation_query(
-                        institution=search_term_val,
-                        subject_filter=subject_val,
-                        category=category_val,
+                with st.spinner("Scoring partners on Snowflake…"):
+                    recs_df = run_recommendation_flat(
+                        subject=subject_val,
+                        existing_only=existing_only,
                         top_n=top_n_val,
                     )
 
-                # Filter to existing collaborators only if requested
-                if existing_only and not recs_df.empty:
-                    recs_df = recs_df[recs_df["IS_NEW_OPPORTUNITY"] == False].copy()
-                    recs_df = recs_df.sort_values("COLLAB_COUNT", ascending=False).reset_index(drop=True)
-
                 if recs_df.empty:
-                    answer = "No matching organisations found. Try broadening the subject area or category."
+                    answer = "No matching organisations found. Try a broader or differently-worded field."
                 else:
                     # Write-ups capped at WRITE_UP_LIMIT; summary table shows all rows
                     write_up_df = recs_df.head(WRITE_UP_LIMIT)
-                    write_up_ids = write_up_df["ORG_ID"].tolist()
 
                     with st.spinner("Fetching relevant titles…"):
-                        titles_df = run_titles_for_orgs(
-                            institution=search_term_val,
-                            org_ids=write_up_ids,
-                            subject_filter=subject_val,
+                        titles_df = run_titles_for_flat_orgs(
+                            tuple(write_up_df["ORG_NAME"].tolist()),
+                            subject_val,
                         )
 
                     with st.spinner("Generating recommendations…"):
-                        rec_text = generate_recommendations(
+                        rec_text = generate_recommendations_flat(
                             write_up_df,
-                            search_term_val,
                             subject_val,
+                            existing_only,
                             titles_df=titles_df,
                         )
 
                     if len(recs_df) > WRITE_UP_LIMIT:
                         note = (
                             f"_Detailed write-ups are shown for the **top {len(write_up_df)}** of "
-                            f"**{len(recs_df)}** recommended partners. "
-                            f"See the summary table below for the full ranked list._\n\n---\n\n"
+                            f"**{len(recs_df)}** ranked partners. "
+                            f"See the summary table on the right for the full ranked list._\n\n---\n\n"
                         )
                         rec_text = note + rec_text
 
-                    # Store recommendation data for graph rendering
+                    # Store recommendation data for the flat-model summary view
                     st.session_state.filter_state["recommendation_data"] = {
                         "recs_df": recs_df.to_dict("records"),
-                        "institution": search_term_val,
+                        "institution": "National University of Singapore",
                         "subject_filter": subject_val,
                         "rec_text": rec_text,
-                        "category": category_val,
                         "existing_only": existing_only,
+                        "flat": True,
                     }
                     st.session_state.filter_state["has_queried"] = True
                     st.session_state.filter_state["query_mode"] = "recommendation"
