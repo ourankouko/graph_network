@@ -294,23 +294,26 @@ COLUMNS:
 - IP_TYPE                      VARCHAR  'Publications' or 'Patents'
 - APPLICATION_PUBLICATION_YEAR NUMBER   year 2020–2025
 - NUS_IP                       BOOLEAN  TRUE = NUS-owned/affiliated
-- QS_SUBJECT                   VARCHAR  subject areas (pipe '|' separated for Publications; comma ',' for Patents)
-- NORMALIZED_NAMES_CONCAT      VARCHAR  institution names separated by ';;'
+- QS_SUBJECT_AREA              VARCHAR  broad QS faculty area — PREFERRED subject dimension. 5 values: ENGINEERING & TECHNOLOGY, NATURAL SCIENCES, LIFE SCIENCES & MEDICINE, SOCIAL SCIENCES & MANAGEMENT, ARTS & HUMANITIES. Multiple values '|' separated (both IP types). Placeholder '-' means unmapped — exclude it.
+- QS_SUBJECT                   VARCHAR  granular subject (e.g. 'DATA SCIENCE'); pipe '|' separated (both IP types). Use only when a specific granular subject is requested.
+- NORMALIZED_NAMES_CONCAT      VARCHAR  institution names separated by '|'
 - N_CORPORATE                  NUMBER   count of corporate co-authors/co-inventors
 - N_INSTITUTE                  NUMBER   count of institute collaborators
 - N_HOSPITAL                   NUMBER   count of hospital collaborators
 - N_GOV_NONPROFIT              NUMBER   count of gov/nonprofit collaborators
-- UNITS                        VARCHAR  NUS unit/dept, ';;' separated for multiple
+- UNITS                        VARCHAR  NUS unit/dept, '|' separated for multiple
 - AUTHORS                      VARCHAR  pipe '|' separated author names (publications only)
 - AUTHOR_COUNT                 NUMBER   number of authors
 
 KEY PATTERNS:
 - NUS records:             WHERE NUS_IP = TRUE
 - Industry collaborations: WHERE N_CORPORATE > 0
-- Split subjects (pubs):   LATERAL FLATTEN(INPUT=>SPLIT(QS_SUBJECT,'|')) f
-- Split subjects (pats):   LATERAL FLATTEN(INPUT=>SPLIT(QS_SUBJECT,',')) f
-- Split institutions:      LATERAL FLATTEN(INPUT=>SPLIT(NORMALIZED_NAMES_CONCAT,';;')) f
-- Split units:             LATERAL FLATTEN(INPUT=>SPLIT(UNITS,';;')) f
+- Split subject area (default, both IP types):
+                           LATERAL FLATTEN(INPUT=>SPLIT(QS_SUBJECT_AREA,'|')) f
+                           then TRIM(f.VALUE::STRING); exclude '' and '-'
+- Split granular subject (both IP types, '|'):  only when a specific subject is asked for
+- Split institutions:      LATERAL FLATTEN(INPUT=>SPLIT(NORMALIZED_NAMES_CONCAT,'|')) f
+- Split units:             LATERAL FLATTEN(INPUT=>SPLIT(UNITS,'|')) f
 - Exclude NUS itself:      NOT CONTAINS(UPPER(TRIM(f.VALUE::STRING)),'NATIONAL UNIVERSITY')
 - Filter by subject value: AND CONTAINS(UPPER(TRIM(f.VALUE::STRING)),'DATA SCIENCE')
   (NEVER use the SELECT alias in WHERE — always repeat the full TRIM(f.VALUE::STRING) expression)
@@ -637,6 +640,41 @@ with t1:
             fig2.update_layout(xaxis=dict(tickmode="linear",dtick=1))
             st.plotly_chart(clean_fig(fig2,380), use_container_width=True)
 
+    # ── Research-area drill-down (broad faculty area → granular subject) ──────
+    section("Research areas — click a faculty area to drill into subjects")
+    tree_df = sql(f"""
+        WITH area_map AS (
+            -- derive exact subject→area map from single-area records (deterministic taxonomy)
+            SELECT DISTINCT TRIM(s.VALUE::STRING) AS SUBJ, TRIM(QS_SUBJECT_AREA) AS AREA
+            FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(REPLACE(QS_SUBJECT,',','|'),'|')) s
+            WHERE QS_SUBJECT_AREA NOT LIKE '%|%'
+              AND TRIM(QS_SUBJECT_AREA) NOT IN ('','-')
+              AND TRIM(s.VALUE::STRING) NOT IN ('','-')
+        ),
+        subj_counts AS (
+            SELECT TRIM(s.VALUE::STRING) AS SUBJ, COUNT(*) AS CNT
+            FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(REPLACE(QS_SUBJECT,',','|'),'|')) s
+            WHERE NUS_IP=TRUE
+              AND APPLICATION_PUBLICATION_YEAR BETWEEN {yr_min} AND {yr_max}
+              AND IP_TYPE IN {ip_filter}
+              AND TRIM(s.VALUE::STRING) NOT IN ('','-')
+            GROUP BY 1
+        )
+        SELECT COALESCE(m.AREA,'(unmapped)') AS AREA, c.SUBJ AS SUBJECT, c.CNT
+        FROM subj_counts c LEFT JOIN area_map m ON c.SUBJ = m.SUBJ
+    """)
+    if not tree_df.empty:
+        figt = px.treemap(tree_df, path=[px.Constant("All research"), "AREA", "SUBJECT"],
+                          values="CNT", color="AREA",
+                          color_discrete_sequence=CHART_COLS)
+        figt.update_traces(root_color="rgba(0,0,0,0)",
+                           hovertemplate="<b>%{label}</b><br>Records: %{value}<extra></extra>")
+        figt.update_layout(margin=dict(t=10,b=10,l=10,r=10),
+                           paper_bgcolor="rgba(0,0,0,0)", height=430)
+        st.plotly_chart(figt, use_container_width=True)
+        insight("Five broad QS faculty areas at the top level — click any area to drill "
+                "into its granular subjects, then click the centre to zoom back out.")
+
 
 # ════════════════════════════════════════════════════════════════════════════════
 # TAB 2 — COLLABORATION AREAS
@@ -655,7 +693,7 @@ with t2:
         pp = sql(f"""
             SELECT TRIM(f.VALUE::STRING) AS PARTNER, QS_SUBJECT AS SUBJECT,
                    APPLICATION_PUBLICATION_YEAR AS YEAR, COUNT(*) AS CNT
-            FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(NORMALIZED_NAMES_CONCAT,';;')) f
+            FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(NORMALIZED_NAMES_CONCAT,'|')) f
             WHERE NUS_IP=TRUE AND IP_TYPE='Patents' AND N_CORPORATE>0
               AND NOT CONTAINS(UPPER(TRIM(f.VALUE::STRING)),'NATIONAL UNIVERSITY')
               AND TRIM(f.VALUE::STRING)<>''
@@ -697,7 +735,7 @@ with t2:
         section("NUS units with the most industry co-publications")
         ud = sql(f"""
             SELECT TRIM(f.VALUE::STRING) AS UNIT, COUNT(*) AS CNT
-            FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(UNITS,';;')) f
+            FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(UNITS,'|')) f
             WHERE NUS_IP=TRUE AND IP_TYPE='Publications' AND N_CORPORATE>0
               AND UNITS IS NOT NULL AND UNITS<>''
               AND APPLICATION_PUBLICATION_YEAR BETWEEN {yr_min} AND {yr_max}
@@ -710,11 +748,11 @@ with t2:
         section("Subject mix — industry co-publications")
         sd = sql(f"""
             SELECT TRIM(f.VALUE::STRING) AS SUBJECT, COUNT(*) AS CNT
-            FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(QS_SUBJECT,'|')) f
+            FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(QS_SUBJECT_AREA,'|')) f
             WHERE NUS_IP=TRUE AND IP_TYPE='Publications' AND N_CORPORATE>0
               AND APPLICATION_PUBLICATION_YEAR BETWEEN {yr_min} AND {yr_max}
-              AND TRIM(f.VALUE::STRING)<>''
-            GROUP BY 1 ORDER BY 2 DESC LIMIT 8
+              AND TRIM(f.VALUE::STRING) NOT IN ('','-')
+            GROUP BY 1 ORDER BY 2 DESC
         """)
         if not sd.empty:
             fig = px.pie(sd, names="SUBJECT", values="CNT",
@@ -754,7 +792,7 @@ with t3:
     ext_df = sql(f"""
         SELECT APPLICATION_PUBLICATION_YEAR AS YEAR,
                TRIM(f.VALUE::STRING) AS SUBJECT, COUNT(*) AS CNT
-        FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(QS_SUBJECT,',')) f
+        FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(QS_SUBJECT,'|')) f
         WHERE NUS_IP=FALSE AND IP_TYPE='Patents'
           AND APPLICATION_PUBLICATION_YEAR BETWEEN {yr_min} AND {yr_max}
           AND TRIM(f.VALUE::STRING)<>''
@@ -798,7 +836,7 @@ with t3:
         section("Top CS & Data Science filers — not yet NUS partners")
         filers = sql(f"""
             SELECT TRIM(f.VALUE::STRING) AS ENTITY, COUNT(*) AS CNT
-            FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(NORMALIZED_NAMES_CONCAT,';;')) f
+            FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(NORMALIZED_NAMES_CONCAT,'|')) f
             WHERE NUS_IP=FALSE AND IP_TYPE='Patents'
               AND (CONTAINS(UPPER(QS_SUBJECT),'DATA SCIENCE')
                    OR CONTAINS(UPPER(QS_SUBJECT),'COMPUTER SCIENCE'))
@@ -863,7 +901,7 @@ with t4:
             SELECT TRIM(f.VALUE::STRING) AS SUBJECT,
                    SUM(CASE WHEN NUS_IP=TRUE  THEN 1 ELSE 0 END) AS NUS_N,
                    SUM(CASE WHEN NUS_IP=FALSE THEN 1 ELSE 0 END) AS EXT_N
-            FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(QS_SUBJECT,',')) f
+            FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(QS_SUBJECT,'|')) f
             WHERE IP_TYPE='Patents'
               AND APPLICATION_PUBLICATION_YEAR BETWEEN {yr_min} AND {yr_max}
               AND TRIM(f.VALUE::STRING)<>''
@@ -900,7 +938,7 @@ with t4:
     pd_df = sql(f"""
         SELECT APPLICATION_PUBLICATION_YEAR AS YEAR,
                TRIM(f.VALUE::STRING) AS SUBJECT, COUNT(*) AS CNT
-        FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(QS_SUBJECT,',')) f
+        FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(QS_SUBJECT,'|')) f
         WHERE NUS_IP=TRUE AND IP_TYPE='Patents'
           AND APPLICATION_PUBLICATION_YEAR BETWEEN {yr_min} AND {yr_max}
           AND TRIM(f.VALUE::STRING)<>''
@@ -938,7 +976,7 @@ with t4:
 with t5:
     unit_list = sql(f"""
         SELECT DISTINCT TRIM(f.VALUE::STRING) AS U
-        FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(UNITS,';;')) f
+        FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(UNITS,'|')) f
         WHERE NUS_IP=TRUE AND UNITS IS NOT NULL AND UNITS<>''
         ORDER BY U
     """)["U"].dropna().tolist()
@@ -966,7 +1004,7 @@ with t5:
         SELECT TRIM(f.VALUE::STRING) AS UNIT, IP_TYPE,
                COUNT(*) AS TOTAL,
                SUM(CASE WHEN N_CORPORATE>0 THEN 1 ELSE 0 END) AS IND
-        FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(UNITS,';;')) f
+        FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(UNITS,'|')) f
         WHERE NUS_IP=TRUE AND UNITS IS NOT NULL AND UNITS<>''
           AND APPLICATION_PUBLICATION_YEAR BETWEEN {yr_min} AND {yr_max}
           {unit_where}
@@ -1002,7 +1040,7 @@ with t5:
         ut = sql(f"""
             SELECT APPLICATION_PUBLICATION_YEAR AS YEAR,
                    TRIM(f.VALUE::STRING) AS UNIT, COUNT(*) AS CNT
-            FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(UNITS,';;')) f
+            FROM {TBL}, LATERAL FLATTEN(INPUT=>SPLIT(UNITS,'|')) f
             WHERE NUS_IP=TRUE AND UNITS IS NOT NULL AND UNITS<>''
               AND APPLICATION_PUBLICATION_YEAR BETWEEN {yr_min} AND {yr_max}
               {unit_where}
@@ -1023,13 +1061,13 @@ with t5:
                TRIM(s.VALUE::STRING) AS SUBJECT,
                COUNT(*) AS CNT
         FROM {TBL},
-             LATERAL FLATTEN(INPUT=>SPLIT(UNITS,';;')) u,
-             LATERAL FLATTEN(INPUT=>SPLIT(QS_SUBJECT,'|')) s
+             LATERAL FLATTEN(INPUT=>SPLIT(UNITS,'|')) u,
+             LATERAL FLATTEN(INPUT=>SPLIT(QS_SUBJECT_AREA,'|')) s
         WHERE NUS_IP=TRUE AND IP_TYPE='Publications'
           AND UNITS IS NOT NULL AND UNITS<>''
           AND APPLICATION_PUBLICATION_YEAR BETWEEN {yr_min} AND {yr_max}
           {unit_where}
-          AND TRIM(u.VALUE::STRING)<>'' AND TRIM(s.VALUE::STRING)<>''
+          AND TRIM(u.VALUE::STRING)<>'' AND TRIM(s.VALUE::STRING) NOT IN ('','-')
         GROUP BY 1,2 ORDER BY CNT DESC LIMIT 100
     """)
     if not us.empty:

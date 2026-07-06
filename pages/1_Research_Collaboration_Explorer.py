@@ -400,6 +400,100 @@ LIMIT {top_n}
     return run_query(sql)
 
 
+# Map common informal terms to actual QS granular subjects
+_FIELD_ALIASES = {
+    "AI": "COMPUTER SCIENCE",
+    "ARTIFICIAL INTELLIGENCE": "COMPUTER SCIENCE",
+    "MACHINE LEARNING": "COMPUTER SCIENCE",
+    "ML": "COMPUTER SCIENCE",
+    "DEEP LEARNING": "COMPUTER SCIENCE",
+    "COMPUTER SCIENCE": "COMPUTER SCIENCE",
+    "DATA SCIENCE": "DATA SCIENCE",
+    "SEMICONDUCTORS": "ENGINEERING - ELECTRICAL",
+    "SEMICONDUCTOR": "ENGINEERING - ELECTRICAL",
+    "ELECTRONICS": "ENGINEERING - ELECTRICAL",
+}
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def run_recommendation_flat(
+    subject: str = None,
+    existing_only: bool = False,
+    top_n: int = 10,
+) -> pd.DataFrame:
+    """Flat-table recommendation scoring on PAT_PUB + ENTITIES (NUS-centric).
+
+    Subject-conditioned, category-weighted composite score:
+      score = field_ip * (1+focus) * (0.5+0.5*recency) * category_weight * institute_bonus
+    Category weights: Corporation/Government-Nonprofit 1.0, Hospital 0.8, Institute 0.6, Individual excluded.
+    """
+    field = (subject or "").strip().upper()
+    field = _FIELD_ALIASES.get(field, field)
+    field_esc = field.replace("'", "''")
+    field_clause = f"CONTAINS(UPPER(p.QS_SUBJECT), '{field_esc}')" if field else "TRUE"
+    order_col = "EXI_SCORE" if existing_only else "NEW_SCORE"
+    row_filter = ("IS_NEW_OPPORTUNITY = FALSE AND FCOLLAB > 0"
+                  if existing_only else "IS_NEW_OPPORTUNITY = TRUE")
+
+    sql = f"""
+WITH name_map AS (
+    SELECT DISTINCT TRIM(UPPER(n.VALUE::STRING)) AS NNAME,
+        PARENT_BRAND, CATEGORY, NUS_AFFILIATED
+    FROM INDUSTRY_AGG.PUBLIC.ENTITIES,
+         LATERAL FLATTEN(INPUT => SPLIT(
+            COALESCE(NORMALIZED_NAMES_PAT,'') || '|' || COALESCE(NORMALIZED_NAMES_PUB,''), '|')) n
+    WHERE TRIM(n.VALUE::STRING) <> '' AND CATEGORY <> 'Individual'
+),
+flat AS (
+    SELECT DISTINCT p.UID, m.PARENT_BRAND AS ORG, m.CATEGORY AS CAT,
+        m.NUS_AFFILIATED AS IS_NUS,
+        {field_clause} AS IN_FIELD,
+        p.APPLICATION_PUBLICATION_YEAR AS YR
+    FROM INDUSTRY_AGG.PUBLIC.PAT_PUB p,
+         LATERAL FLATTEN(INPUT => SPLIT(p.NORMALIZED_NAMES_CONCAT, '|')) f
+    JOIN name_map m ON TRIM(UPPER(f.VALUE::STRING)) = m.NNAME
+),
+nus_uids AS (SELECT DISTINCT UID FROM flat WHERE IS_NUS),
+maxyr AS (SELECT MAX(YR) AS MY FROM flat),
+org_inst AS (
+    SELECT a.ORG, COUNT(DISTINCT b.ORG) AS N_INST
+    FROM flat a JOIN flat b ON a.UID = b.UID AND a.ORG <> b.ORG AND b.CAT = 'Institute'
+    GROUP BY a.ORG
+),
+agg AS (
+    SELECT f.ORG, ANY_VALUE(f.CAT) AS CAT, BOOLOR_AGG(f.IS_NUS) AS IS_NUS,
+        COUNT(DISTINCT f.UID) AS TOTAL,
+        COUNT(DISTINCT IFF(f.IN_FIELD, f.UID, NULL)) AS FIELD_CNT,
+        COUNT(DISTINCT IFF(f.IN_FIELD AND f.UID IN (SELECT UID FROM nus_uids), f.UID, NULL)) AS FCOLLAB,
+        MAX(IFF(f.UID IN (SELECT UID FROM nus_uids), 1, 0)) AS EXISTING_ANY,
+        COUNT(DISTINCT IFF(f.IN_FIELD AND f.YR >= (SELECT MY FROM maxyr) - 4, f.UID, NULL)) AS FIELD_RECENT
+    FROM flat f GROUP BY f.ORG
+),
+scored AS (
+    SELECT a.ORG AS ORG_NAME, a.CAT AS ORG_CATEGORY,
+        NOT (a.EXISTING_ANY = 1) AS IS_NEW_OPPORTUNITY,
+        a.FIELD_CNT, a.TOTAL, a.FCOLLAB, COALESCE(i.N_INST, 0) AS N_INST,
+        a.FIELD_CNT / NULLIF(a.TOTAL,0) AS FOCUS,
+        a.FIELD_RECENT / NULLIF(a.FIELD_CNT,0) AS RECENT,
+        CASE a.CAT WHEN 'Corporation' THEN 1.0 WHEN 'Government / Non-profit' THEN 1.0
+                   WHEN 'Hospital' THEN 0.8 WHEN 'Institute' THEN 0.6 ELSE 0 END AS CAT_W,
+        1 + LEAST(0.5, 0.3 * LN(1 + COALESCE(i.N_INST,0))) AS INST_BONUS
+    FROM agg a LEFT JOIN org_inst i ON a.ORG = i.ORG
+    WHERE a.IS_NUS = FALSE AND a.FIELD_CNT > 0
+      AND a.CAT IN ('Corporation','Government / Non-profit','Hospital','Institute')
+)
+SELECT ORG_NAME, ORG_CATEGORY, IS_NEW_OPPORTUNITY, FIELD_CNT, TOTAL, FCOLLAB, N_INST,
+       ROUND(FOCUS,2) AS FOCUS, ROUND(RECENT,2) AS RECENT,
+       ROUND(FIELD_CNT * (1+FOCUS) * (0.5+0.5*RECENT) * CAT_W * INST_BONUS, 1) AS NEW_SCORE,
+       ROUND(FCOLLAB  * (1+FOCUS) * (0.5+0.5*RECENT) * CAT_W * INST_BONUS, 1) AS EXI_SCORE
+FROM scored
+WHERE {row_filter}
+ORDER BY {order_col} DESC
+LIMIT {int(top_n)}
+"""
+    return run_query(sql)
+
+
 def run_org_collaborators_query(org_ids: list) -> pd.DataFrame:
     """Fetch all collaborators of the recommended orgs (both patents and publications)."""
     if not org_ids:
@@ -1404,8 +1498,59 @@ has_queried = fs.get("has_queried", False)
 
 
 # -----------------------------
-# Two column layout
+# Stage 1 beta: flat-table recommendation scoring (self-contained, isolated)
 # -----------------------------
+with st.expander("⚡ New scoring engine (beta) — flat-table recommendations", expanded=False):
+    st.caption(
+        "Subject-conditioned scoring on PAT_PUB + ENTITIES. "
+        "Category weights: Corporation / Government 1.0 · Hospital 0.8 · Institute 0.6 · Individuals excluded. "
+        "Score = field IP × (1+focus) × recency × category weight × academic-ties bonus."
+    )
+    bc1, bc2, bc3 = st.columns([3, 2, 1])
+    with bc1:
+        beta_subject = st.text_input(
+            "Research field (e.g. AI, semiconductors, medicine, data science)",
+            value="AI", key="beta_subject",
+        )
+    with bc2:
+        beta_mode = st.radio(
+            "Mode", ["New opportunities", "Existing partners"],
+            horizontal=True, key="beta_mode",
+        )
+    with bc3:
+        beta_topn = st.number_input("Top N", min_value=5, max_value=50, value=15, step=5, key="beta_topn")
+
+    if st.button("Run new scoring", key="beta_run", type="primary"):
+        with st.spinner("Scoring on Snowflake…"):
+            beta_df = run_recommendation_flat(
+                subject=beta_subject,
+                existing_only=(beta_mode == "Existing partners"),
+                top_n=int(beta_topn),
+            )
+        st.session_state["beta_result"] = beta_df.to_dict("records") if not beta_df.empty else []
+        st.session_state["beta_meta"] = {"subject": beta_subject, "mode": beta_mode}
+
+    _beta_res = st.session_state.get("beta_result")
+    if _beta_res is not None:
+        _bdf = pd.DataFrame(_beta_res)
+        _meta = st.session_state.get("beta_meta", {})
+        if _bdf.empty:
+            st.info("No matching organisations found. Try a broader or differently-worded field.")
+        else:
+            _score_col = "EXI_SCORE" if _meta.get("mode") == "Existing partners" else "NEW_SCORE"
+            _show = _bdf[["ORG_NAME", "ORG_CATEGORY", "FIELD_CNT", "FCOLLAB",
+                          "FOCUS", "RECENT", "N_INST", _score_col]].copy()
+            _show.columns = ["Organisation", "Category", "Field IP", "NUS collabs (field)",
+                             "Focus", "Recency", "Academic ties", "Score"]
+            _show.index = range(1, len(_show) + 1)
+            st.markdown(f"**{_meta.get('mode','')}** for NUS in _{_meta.get('subject','')}_ — ranked by score.")
+            st.dataframe(_show, use_container_width=True)
+            st.download_button(
+                "⬇️ Download CSV", data=_show.to_csv().encode("utf-8"),
+                file_name="recommendations_beta.csv", mime="text/csv", key="beta_csv",
+            )
+
+
 # -----------------------------
 # Two column layout
 # -----------------------------
