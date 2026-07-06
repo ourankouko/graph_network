@@ -454,10 +454,12 @@ flat AS (
     JOIN name_map m ON TRIM(UPPER(f.VALUE::STRING)) = m.NNAME
 ),
 nus_uids AS (SELECT DISTINCT UID FROM flat WHERE IS_NUS),
-maxyr AS (SELECT MAX(YR) AS MY FROM flat),
+yrange AS (SELECT MIN(YR) AS MINY, MAX(YR) AS MAXY FROM flat),
 org_inst AS (
+    -- academic-collaboration track record: distinct NON-NUS institutes the org has co-appeared with
     SELECT a.ORG, COUNT(DISTINCT b.ORG) AS N_INST
-    FROM flat a JOIN flat b ON a.UID = b.UID AND a.ORG <> b.ORG AND b.CAT = 'Institute'
+    FROM flat a JOIN flat b ON a.UID = b.UID AND a.ORG <> b.ORG
+        AND b.CAT = 'Institute' AND b.IS_NUS = FALSE
     GROUP BY a.ORG
 ),
 agg AS (
@@ -466,7 +468,9 @@ agg AS (
         COUNT(DISTINCT IFF(f.IN_FIELD, f.UID, NULL)) AS FIELD_CNT,
         COUNT(DISTINCT IFF(f.IN_FIELD AND f.UID IN (SELECT UID FROM nus_uids), f.UID, NULL)) AS FCOLLAB,
         MAX(IFF(f.UID IN (SELECT UID FROM nus_uids), 1, 0)) AS EXISTING_ANY,
-        COUNT(DISTINCT IFF(f.IN_FIELD AND f.YR >= (SELECT MY FROM maxyr) - 2, f.UID, NULL)) AS FIELD_RECENT
+        AVG(IFF(f.IN_FIELD,
+            (f.YR - (SELECT MINY FROM yrange)) / NULLIF((SELECT MAXY FROM yrange) - (SELECT MINY FROM yrange), 0),
+            NULL)) AS RECENCY_W
     FROM flat f GROUP BY f.ORG
 ),
 scored AS (
@@ -474,7 +478,7 @@ scored AS (
         NOT (a.EXISTING_ANY = 1) AS IS_NEW_OPPORTUNITY,
         a.FIELD_CNT, a.TOTAL, a.FCOLLAB, COALESCE(i.N_INST, 0) AS N_INST,
         a.FIELD_CNT / NULLIF(a.TOTAL,0) AS FOCUS,
-        a.FIELD_RECENT / NULLIF(a.FIELD_CNT,0) AS RECENT,
+        COALESCE(a.RECENCY_W, 0) AS RECENT,
         CASE a.CAT WHEN 'Corporation' THEN 1.0 WHEN 'Government / Non-profit' THEN 1.0
                    WHEN 'Hospital' THEN 0.8 WHEN 'Institute' THEN 0.6 ELSE 0 END AS CAT_W,
         1 + LEAST(0.5, 0.3 * LN(1 + COALESCE(i.N_INST,0))) AS INST_BONUS
